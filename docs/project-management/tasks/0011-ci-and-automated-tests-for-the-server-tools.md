@@ -23,7 +23,7 @@ New in this repo. The scripts in `server/` and `profiles/` have been verified by
 - [x] `smoke-test` also runs phpstan (clean file passes, undefined function fails; verified on the first server, 16/16 checks) (it currently checks `php -l`, phpcs and phpunit only)
 - [ ] The parity SQLite and MySQL phases are re-run from this repo and recorded (only the MariaDB phase has been re-run since the migration; the earlier numbers are in [[0001-pinned-php-validation-image]]); the leftover `mysql:8.0` image on the first server is either used for that or removed
 - [ ] Rootless Podman verified with the same smoke test, or the README's Podman claim is removed
-- [ ] (workflow `image.yml` written: weekly and manual, x86_64 and arm64 matrix, fixture module `tests/fixtures/smoke_module`; the fixture build and the first run are unverified) The image is built and smoke-tested in CI on at least one architecture (heavy: about 2.5 GB, minutes to build; a scheduled or manual job is acceptable), and both x86_64 and arm64 are covered somewhere
+- [ ] (workflow `image.yml` written: weekly and manual, x86_64 and arm64 matrix, fixture module `tests/fixtures/smoke_module`; the fixture build and smoke test passed 16/16 on the first server, x86_64, 2026-11-05; the first CI run and arm64 are unverified) The image is built and smoke-tested in CI on at least one architecture (heavy: about 2.5 GB, minutes to build; a scheduled or manual job is acceptable), and both x86_64 and arm64 are covered somewhere
 
 ## Implementation notes
 - Mind the repo's own test directory: `tests/` is `export-ignore`d from the Composer archive, which is the right place for fixtures.
@@ -31,7 +31,6 @@ New in this repo. The scripts in `server/` and `profiles/` have been verified by
 
 ## Pending updates
 - README has a plain Tests section; add a badge once the remote exists.
-- Build the image from `tests/fixtures/smoke_module` on the first server and smoke-test it, to prove the fixture passes phpcs and its tests before the first CI run.
 
 ## Related
 - Project:: [[first-public-release]]
