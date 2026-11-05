@@ -1,7 +1,7 @@
 ---
 type: task
 tags: [phorward/task]
-status: backlog        # backlog | todo | in-progress | review | done | blocked | dropped
+status: in-progress        # backlog | todo | in-progress | review | done | blocked | dropped
 priority: medium       # high | medium | low
 project: "[[first-public-release]]"
 area: tests
@@ -17,20 +17,21 @@ blocked-by:
 New in this repo. The scripts in `server/` and `profiles/` have been verified by hand on one x86_64 server and one arm64 laptop. Nothing runs automatically, and several claims in the README (Podman, other hosts) are untested.
 
 ## Acceptance criteria
-- [ ] A CI workflow runs on every push: `shellcheck` on the shell scripts, `php -l` on PHP files, `composer validate`, and Python tests for `server/shard-tests.py`
-- [ ] Unit tests for `shard-tests.py` against a small fixture tree: every test lands in exactly one shard for 1 to 8 shards, stray test files are rejected, results are deterministic
-- [ ] `smoke-test` also exercises `with-mariadb`: starts, sets `SIMPLETEST_DB`, runs a command and shuts down, with no network, as non-root, on a read-only root
-- [ ] `smoke-test` also runs phpstan (it currently checks `php -l`, phpcs and phpunit only)
+- [x] A CI workflow runs on every push (`.github/workflows/ci.yml`; written, not yet run: no remote): `shellcheck` on the shell scripts, `php -l` on PHP files, `composer validate`, and Python tests for `server/shard-tests.py`
+- [x] Unit tests for `shard-tests.py` (`tests/test_shard_tests.py`, 13 tests) against a small fixture tree: every test lands in exactly one shard for 1 to 8 shards, stray test files are rejected, results are deterministic
+- [x] `smoke-test` also exercises `with-mariadb` (verified 2026-11-05 on the first server; checks start, `SIMPLETEST_DB`, shutdown, exit status under the sandbox flags): starts, sets `SIMPLETEST_DB`, runs a command and shuts down, with no network, as non-root, on a read-only root
+- [x] `smoke-test` also runs phpstan (clean file passes, undefined function fails; verified on the first server, 16/16 checks) (it currently checks `php -l`, phpcs and phpunit only)
 - [ ] The parity SQLite and MySQL phases are re-run from this repo and recorded (only the MariaDB phase has been re-run since the migration; the earlier numbers are in [[0001-pinned-php-validation-image]]); the leftover `mysql:8.0` image on the first server is either used for that or removed
 - [ ] Rootless Podman verified with the same smoke test, or the README's Podman claim is removed
-- [ ] The image is built and smoke-tested in CI on at least one architecture (heavy: about 2.5 GB, minutes to build; a scheduled or manual job is acceptable), and both x86_64 and arm64 are covered somewhere
+- [ ] (workflow `image.yml` written: weekly and manual, x86_64 and arm64 matrix, fixture module `tests/fixtures/smoke_module`; the fixture build and the first run are unverified) The image is built and smoke-tested in CI on at least one architecture (heavy: about 2.5 GB, minutes to build; a scheduled or manual job is acceptable), and both x86_64 and arm64 are covered somewhere
 
 ## Implementation notes
 - Mind the repo's own test directory: `tests/` is `export-ignore`d from the Composer archive, which is the right place for fixtures.
 - macOS `sed -i` needs an empty suffix argument; scripts must work with GNU and BSD tools if they run on both.
 
 ## Pending updates
-- Add the status to the README once CI exists (badge or a plain line).
+- README has a plain Tests section; add a badge once the remote exists.
+- Build the image from `tests/fixtures/smoke_module` on the first server and smoke-test it, to prove the fixture passes phpcs and its tests before the first CI run.
 
 ## Related
 - Project:: [[first-public-release]]

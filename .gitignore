@@ -7,3 +7,4 @@
 /parity-*/
 # Machine-specific notes for local Claude sessions (server names, paths); never committed.
 /CLAUDE.local.md
+__pycache__/

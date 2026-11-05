@@ -1,0 +1,5 @@
+name: Smoke module
+type: module
+description: Minimal module used to build and smoke-test phorward images.
+package: Testing
+core_version_requirement: ^11

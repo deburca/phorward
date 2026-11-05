@@ -20,7 +20,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$MODULE" ] && [ -d "$MODULE" ] || { echo "need --module PATH (a module checkout)" >&2; exit 2; }
-[ -n "$IMAGE" ] || IMAGE="phorward:$(basename "$(ls "$MODULE"/*.info.yml | head -1)" .info.yml)-php8.3"
+[ -n "$IMAGE" ] || IMAGE="phorward:$(basename "$(find "$MODULE" -maxdepth 1 -name '*.info.yml' | sort | head -1)" .info.yml)-php8.3"
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image not found: $IMAGE" >&2; exit 2; }
 label() { docker image inspect -f "{{index .Config.Labels \"$1\"}}" "$IMAGE"; }
@@ -43,10 +43,11 @@ stage() {   # stage <dir>: copy the module the way a run will, minus what a run 
   rsync -a --exclude=.git --exclude=vendor --exclude=node_modules "$MODULE/" "$1/"
 }
 
+# shellcheck disable=SC2329  # invoked indirectly through expect
 sandbox() {   # sandbox <dir> <cmd...>: the limits every validation run gets
   local dir="$1"; shift
   docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
-    --pids-limit 512 --memory 4g --cpus 2 \
+    --pids-limit 512 --memory "${SANDBOX_MEMORY:-4g}" --cpus 2 \
     --tmpfs /tmp:exec,size=1g --tmpfs /opt/drupal-project/web/sites/simpletest:mode=1777,size=1g \
     -v "$dir:$M:ro" \
     -e SIMPLETEST_DB="sqlite://localhost//tmp/test.sqlite" -e SIMPLETEST_BASE_URL=http://localhost \
@@ -106,16 +107,41 @@ sed -i.bak "s/__NAME__/$NAME/g" "$WORK/bad/tests/src/Unit/SmokeFailingTest.php" 
 echo "-- good tree"
 expect pass "php -l (whole src/)" sandbox "$WORK/good" sh -c "find $M/src -name '*.php' -print0 | xargs -0 -n1 php -l >/dev/null"
 expect pass "phpcs"   sandbox "$WORK/good" sh -c "cd $M && phpcs --warning-severity=0"
+# shellcheck disable=SC2086  # $TESTS is a space-separated list on purpose
 expect pass "phpunit ($TESTS)" sandbox "$WORK/good" sh -c "cd /opt/drupal-project && phpunit -c web/core $(printf "$M/%s " $TESTS) --no-progress"
 echo "-- broken tree"
 expect fail "php -l catches syntax error" sandbox "$WORK/bad" php -l "$M/src/SmokeSyntax.php"
 expect fail "phpcs catches style errors"  sandbox "$WORK/bad" sh -c "cd $M && phpcs --warning-severity=0 src/SmokeStyle.php"
 expect fail "phpunit catches failing test" sandbox "$WORK/bad" sh -c "cd /opt/drupal-project && phpunit -c web/core $M/tests/src/Unit/SmokeFailingTest.php --no-progress"
+echo "-- phpstan"
+mkdir -p "$WORK/stan-good" "$WORK/stan-bad"
+cat > "$WORK/stan-good/SmokeOk.php" <<'PHP'
+<?php
+function smoke_ok(int $a): int { return $a + 1; }
+PHP
+cat > "$WORK/stan-bad/SmokeBad.php" <<'PHP'
+<?php
+function smoke_bad(): int { return smoke_missing_function(); }
+PHP
+expect pass "phpstan passes clean code"  sandbox "$WORK/stan-good" sh -c "cd $M && phpstan analyse --no-progress --no-ansi --level=5 SmokeOk.php"
+expect fail "phpstan catches undefined function" sandbox "$WORK/stan-bad" sh -c "cd $M && phpstan analyse --no-progress --no-ansi --level=5 SmokeBad.php"
+echo "-- with-mariadb"
+# MariaDB and its tmpfs datadir share the container's memory limit, hence 6g.
+export SANDBOX_MEMORY=6g
+# shellcheck disable=SC2016  # the expressions must expand inside the container
+expect pass "with-mariadb sets SIMPLETEST_DB and serves queries" sandbox "$WORK/good" with-mariadb sh -c \
+  'case "$SIMPLETEST_DB" in mysql://*) ;; *) exit 1;; esac; [ "$(mariadb --no-defaults -h127.0.0.1 -udrupal -pdrupal -N -e "SELECT 1" drupal)" = 1 ]'
+expect pass "with-mariadb shuts the server down afterwards" sandbox "$WORK/good" sh -c \
+  'with-mariadb true; ! mariadb-admin --no-defaults --socket=/tmp/mariadb/sock ping >/dev/null 2>&1'
+expect pass "with-mariadb returns the command's exit status" sandbox "$WORK/good" sh -c \
+  'with-mariadb sh -c "exit 7"; [ $? -eq 7 ]'
+unset SANDBOX_MEMORY
 echo "-- sandbox"
 expect fail "no network"          sandbox "$WORK/good" php -r 'exit(@file_get_contents("http://1.1.1.1", false, stream_context_create(["http"=>["timeout"=>3]])) === false ? 1 : 0);'
 expect fail "root fs read-only"   sandbox "$WORK/good" sh -c 'touch /etc/smoke'
 expect fail "module mount read-only" sandbox "$WORK/good" sh -c "touch $M/smoke"
 expect fail "core tree read-only" sandbox "$WORK/good" sh -c 'touch /opt/drupal-project/web/core/smoke'
+# shellcheck disable=SC2016  # the expression must expand inside the container
 expect pass "runs as non-root"    sandbox "$WORK/good" sh -c '[ "$(id -u)" = 10001 ]'
 
 echo; [ $FAILS -eq 0 ] && echo "smoke test: all checks passed" || echo "smoke test: $FAILS check(s) FAILED"

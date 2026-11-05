@@ -41,6 +41,17 @@ single `*.info.yml`. The image records the mount path and name as labels (`phorw
 
 See [docs/image.md](docs/image.md) for the design and measurements.
 
+## Tests
+
+```bash
+python3 -I -m unittest discover -s tests -v   # unit tests for server/shard-tests.py
+shellcheck server/build-image server/smoke-test server/parity-check profiles/*/with-mariadb
+```
+
+GitHub Actions (`.github/workflows/`) runs these and `composer validate` on every push. A heavier workflow
+builds the image from the fixture module in `tests/fixtures/smoke_module` and smoke-tests it weekly and on
+demand, on x86_64 and arm64. Neither workflow has run yet, because the repository has no remote.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).

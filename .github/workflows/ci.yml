@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          tools: composer
+      - name: composer validate
+        run: composer validate --strict
+      - name: php -l
+        run: find bin src tests -name '*.php' -o -name phorward -type f | xargs -n1 php -l
+      - name: shellcheck
+        run: shellcheck server/build-image server/smoke-test server/parity-check profiles/*/with-mariadb
+      - name: shard-tests unit tests
+        run: python3 -I -m unittest discover -s tests -v
+      - name: shard-tests --check on the fixture module
+        run: python3 -I server/shard-tests.py tests/fixtures/smoke_module --check

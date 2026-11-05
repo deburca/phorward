@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<ruleset name="smoke_module">
+  <description>Drupal coding standards for the smoke module.</description>
+  <file>src</file>
+  <file>tests</file>
+  <arg name="extensions" value="php,module,inc,install,test,profile,theme,info,txt,yml"/>
+  <rule ref="Drupal"/>
+  <rule ref="DrupalPractice"/>
+</ruleset>

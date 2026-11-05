@@ -1,0 +1,9 @@
+{
+  "name": "phorward/smoke_module",
+  "description": "Minimal Drupal module used to build and smoke-test phorward images.",
+  "type": "drupal-module",
+  "license": "MIT",
+  "require": {
+    "drupal/core": "^11"
+  }
+}
