@@ -15,10 +15,10 @@
 # Build with server/build-image, which supplies the `module` build context (a checkout of the
 # module, used only to resolve its composer dependencies and patches) and the MODULE_* build args.
 ARG PHP_VERSION=8.3
-FROM composer:2 AS composer
+FROM docker.io/library/composer:2 AS composer
 
 # trixie, not bookworm: Drupal 11.4 needs SQLite >= 3.45 and bookworm ships 3.40.
-FROM php:${PHP_VERSION}-cli-trixie AS base
+FROM docker.io/library/php:${PHP_VERSION}-cli-trixie AS base
 
 # opcache is compiled into PHP core from 8.5, so it is only installed as an extension before that.
 RUN apt-get update \

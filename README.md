@@ -22,7 +22,8 @@ under test is mounted read-only at run time and never baked in.
 
 ## Requirements (server)
 
-- Linux with Docker (Podman is intended to work), `rsync`, `python3`
+- Linux with Docker, or rootless Podman with its `docker` command available (the `podman-docker` package or a
+  `docker` symlink to `podman`; the scripts call `docker`), plus `rsync` and `python3`
 - Network access while building images; none while running them
 - About 8 GB RAM for Kernel tests with MariaDB (`--memory 6g`)
 - x86_64 or arm64

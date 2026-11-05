@@ -84,7 +84,7 @@ start_mysql() {
   docker network create --internal "$NET" >/dev/null
   docker run -d --name "$DB" --network "$NET" --memory 4g --cpus "$CPUS" \
     -e MYSQL_ROOT_PASSWORD=root -e MYSQL_USER=drupal -e MYSQL_PASSWORD=drupal \
-    --tmpfs /var/lib/mysql mysql:8.0 --skip-log-bin --innodb-flush-log-at-trx-commit=0 >/dev/null
+    --tmpfs /var/lib/mysql docker.io/library/mysql:8.0 --skip-log-bin --innodb-flush-log-at-trx-commit=0 >/dev/null
   for _ in $(seq 1 60); do docker exec "$DB" mysqladmin -uroot -proot ping --silent >/dev/null 2>&1 && break; sleep 2; done
   for i in $(seq 1 "$SHARDS"); do
     docker exec "$DB" mysql -uroot -proot -e "CREATE DATABASE d$i; GRANT ALL ON *.* TO 'drupal'@'%'; FLUSH PRIVILEGES;" 2>/dev/null
