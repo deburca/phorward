@@ -1,0 +1,26 @@
+#!/bin/sh
+# with-mariadb <command...>: run <command> with a throwaway MariaDB on 127.0.0.1 (works under
+# --network none). Datadir is under /tmp, so mount a tmpfs there. Exports SIMPLETEST_DB.
+# The command's exit status is returned.
+set -u
+D=/tmp/mariadb
+mkdir -p "$D/data"
+mariadb-install-db --no-defaults --datadir="$D/data" --auth-root-authentication-method=normal \
+  --skip-test-db >"$D/install.log" 2>&1 || { cat "$D/install.log" >&2; exit 70; }
+mariadbd --no-defaults --datadir="$D/data" --socket="$D/sock" --pid-file="$D/pid" \
+  --bind-address=127.0.0.1 --port=3306 --skip-log-bin --innodb-flush-log-at-trx-commit=0 \
+  --innodb-buffer-pool-size=256M --innodb-log-file-size=64M --max-connections=200 \
+  --character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci >"$D/server.log" 2>&1 &
+i=0
+until mariadb-admin --no-defaults --socket="$D/sock" ping >/dev/null 2>&1; do
+  i=$((i + 1)); [ "$i" -gt 60 ] && { echo "mariadb did not start" >&2; cat "$D/server.log" >&2; exit 71; }
+  sleep 1
+done
+mariadb --no-defaults --socket="$D/sock" -uroot -e \
+  "CREATE DATABASE drupal; CREATE USER 'drupal'@'127.0.0.1' IDENTIFIED BY 'drupal'; CREATE USER 'drupal'@'localhost' IDENTIFIED BY 'drupal'; GRANT ALL ON *.* TO 'drupal'@'127.0.0.1'; GRANT ALL ON *.* TO 'drupal'@'localhost';" \
+  || exit 72
+export SIMPLETEST_DB="mysql://drupal:drupal@127.0.0.1/drupal"
+"$@"
+rc=$?
+mariadb-admin --no-defaults --socket="$D/sock" -uroot shutdown >/dev/null 2>&1
+exit $rc

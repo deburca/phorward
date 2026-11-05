@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Database parity for a phorward validation image.
+# Runs a module's Kernel + Unit suite with the same image and shard split against different databases
+# (SQLite and in-container MariaDB, both in the sandbox with --network none; MySQL 8.0 on a private
+# Docker network, as many CI setups use), then compares every test's outcome.
+#   parity-check --module PATH [--image TAG] [--shards N] [--cpus C] [--phases sqlite,mariadb,mysql] [--out DIR]
+# Phases: sqlite (sandbox), mariadb (in-container MariaDB via with-mariadb, sandbox), mysql (MySQL 8.0,
+# the CI database, used as the baseline when present).
+# Needs the mysql:8.0 image (pulled if absent). Results: DIR/{sqlite,mysql}/shardK/junit.xml and
+# DIR/report.txt. Exit 0 = identical outcomes for every test.
+set -uo pipefail
+
+IMAGE=""
+MODULE="${PHORWARD_MODULE_DIR:-}"
+SHARDS=4
+PHASES="sqlite,mysql"
+CPUS=2
+OUT="$PWD/parity-$(date +%Y%m%d-%H%M%S)"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --image) IMAGE="$2"; shift 2 ;;
+    --module) MODULE="$2"; shift 2 ;;
+    --shards) SHARDS="$2"; shift 2 ;;
+    --phases) PHASES="$2"; shift 2 ;;
+    --cpus) CPUS="$2"; shift 2 ;;
+    --out) OUT="$2"; shift 2 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$MODULE" ] && [ -d "$MODULE" ] || { echo "need --module PATH (a module checkout)" >&2; exit 2; }
+[ -n "$IMAGE" ] || IMAGE="phorward:$(basename "$(ls "$MODULE"/*.info.yml | head -1)" .info.yml)-php8.3"
+docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image not found: $IMAGE" >&2; exit 2; }
+M="$(docker image inspect -f '{{index .Config.Labels "phorward.module-path"}}' "$IMAGE")"
+NAME="$(docker image inspect -f '{{index .Config.Labels "phorward.module-name"}}' "$IMAGE")"
+[ -n "$M" ] && [ -n "$NAME" ] || { echo "image $IMAGE has no phorward.module-* labels; not a phorward image" >&2; exit 2; }
+HERE="$(cd "$(dirname "$0")" && pwd)"
+NET=phorward-parity-net
+DB=phorward-parity-mysql
+mkdir -p "$OUT"
+SRC="$OUT/module"
+mkdir -p "$SRC"
+rsync -a --exclude=.git --exclude=vendor --exclude=node_modules "$MODULE/" "$SRC/"
+
+cleanup() { docker rm -f "$DB" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1; }
+trap cleanup EXIT
+
+shard_files() {   # shard_files <i>: the test files of shard i/SHARDS, module-relative paths made absolute
+  docker run --rm --network none -v "$SRC:$M:ro" -v "$HERE/shard-tests.py:/shard-tests.py:ro" "$IMAGE" \
+    python3 /shard-tests.py "$M" "$1/$SHARDS"
+}
+
+run_phase() {   # run_phase <sqlite|mysql>
+  local phase="$1" i pids=()
+  echo "== $phase: $SHARDS shards x $CPUS cpus, $(date +%T)"
+  for i in $(seq 1 "$SHARDS"); do
+    mkdir -p "$OUT/$phase/shard$i"; chmod 777 "$OUT/$phase/shard$i"
+    local files; files="$(shard_files "$i")"
+    local netargs dburl
+    local wrap="" mem=4g
+    case "$phase" in
+      sqlite) netargs=(--network none); dburl="sqlite://localhost//tmp/test.sqlite" ;;
+      mariadb) netargs=(--network none); dburl=unused; wrap="with-mariadb "; mem=6g ;;
+      mysql) netargs=(--network "$NET"); dburl="mysql://drupal:drupal@$DB/d$i" ;;
+    esac
+    (
+      docker run --rm "${netargs[@]}" --read-only --cap-drop ALL --security-opt no-new-privileges \
+        --pids-limit 1024 --memory "$mem" --cpus "$CPUS" \
+        --tmpfs /tmp:exec,size=1g --tmpfs /opt/drupal-project/web/sites/simpletest:mode=1777,size=1g \
+        -v "$SRC:$M:ro" -v "$OUT/$phase/shard$i:/results" \
+        -e SIMPLETEST_DB="$dburl" -e SIMPLETEST_BASE_URL=http://localhost \
+        "$IMAGE" sh -c "cd /opt/drupal-project && ${wrap}phpunit -c web/core $files --group $NAME --no-progress --log-junit /results/junit.xml" \
+        >"$OUT/$phase/shard$i/output.log" 2>&1
+      echo $? >"$OUT/$phase/shard$i/rc"
+    ) &
+    pids+=($!)
+  done
+  wait "${pids[@]}"
+  echo "== $phase done $(date +%T)"
+}
+
+start_mysql() {
+  docker network create --internal "$NET" >/dev/null
+  docker run -d --name "$DB" --network "$NET" --memory 4g --cpus "$CPUS" \
+    -e MYSQL_ROOT_PASSWORD=root -e MYSQL_USER=drupal -e MYSQL_PASSWORD=drupal \
+    --tmpfs /var/lib/mysql mysql:8.0 --skip-log-bin --innodb-flush-log-at-trx-commit=0 >/dev/null
+  for t in $(seq 1 60); do docker exec "$DB" mysqladmin -uroot -proot ping --silent >/dev/null 2>&1 && break; sleep 2; done
+  for i in $(seq 1 "$SHARDS"); do
+    docker exec "$DB" mysql -uroot -proot -e "CREATE DATABASE d$i; GRANT ALL ON *.* TO 'drupal'@'%'; FLUSH PRIVILEGES;" 2>/dev/null
+  done
+}
+
+for phase in ${PHASES//,/ }; do
+  [ "$phase" = mysql ] && start_mysql
+  run_phase "$phase"
+done
+
+python3 - "$OUT" "$PHASES" >"$OUT/report.txt" <<'PY'
+import sys, glob, xml.etree.ElementTree as ET
+out = sys.argv[1]
+def load(phase):
+    res = {}
+    for f in glob.glob(f"{out}/{phase}/shard*/junit.xml"):
+        for tc in ET.parse(f).getroot().iter("testcase"):
+            key = f"{tc.get('class') or tc.get('classname')}::{tc.get('name')}"
+            kids = {c.tag for c in tc}
+            res[key] = ("fail" if kids & {"failure", "error"} else "skip" if "skipped" in kids else "pass")
+    return res
+phases = sys.argv[2].split(",")
+base = "mysql" if "mysql" in phases else phases[0]
+data = {ph: load(ph) for ph in phases}
+bad = any(not r for r in data.values())
+for name, r in data.items():
+    c = {s: sum(v == s for v in r.values()) for s in ("pass", "fail", "skip")}
+    print(f"{name}: {len(r)} tests  pass={c['pass']} fail={c['fail']} skip={c['skip']}")
+a = data[base]
+for ph in phases:
+    if ph == base:
+        continue
+    b = data[ph]
+    only_base, only_ph = sorted(set(a) - set(b)), sorted(set(b) - set(a))
+    diff = sorted(k for k in set(a) & set(b) if a[k] != b[k])
+    print(f"{ph} vs {base}: only in {base}: {len(only_base)}; only in {ph}: {len(only_ph)}; outcome differs: {len(diff)}")
+    for k in only_base: print(f"  only {base}:", k)
+    for k in only_ph: print(f"  only {ph}:", k)
+    for k in diff: print(f"  differs: {k}  {base}={a[k]} {ph}={b[k]}")
+    bad = bad or only_base or only_ph or diff
+sys.exit(1 if bad else 0)
+PY
+rc=$?
+cat "$OUT/report.txt"
+exit $rc

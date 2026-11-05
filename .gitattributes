@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+# Keep the Composer dist archive small: tests and project docs are not needed to use the package.
+/tests         export-ignore
+/docs          export-ignore
+/.gitattributes export-ignore
+/.gitignore    export-ignore

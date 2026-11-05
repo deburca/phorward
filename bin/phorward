@@ -1,0 +1,24 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * phorward command line entry point.
+ *
+ * Placeholder: the run, config, doctor and server:install commands arrive with the client work.
+ * Until then the server-side tools in server/ are used directly.
+ */
+
+declare(strict_types=1);
+
+const PHORWARD_VERSION = '0.0.0-dev';
+
+$command = $argv[1] ?? 'help';
+
+if (in_array($command, ['--version', '-V', 'version'], TRUE)) {
+  fwrite(STDOUT, 'phorward ' . PHORWARD_VERSION . "\n");
+  exit(0);
+}
+
+fwrite(STDOUT, "phorward " . PHORWARD_VERSION . "\n\n");
+fwrite(STDOUT, "No client commands are implemented yet. See README.md for the server tools.\n");
+exit($command === 'help' || $command === '--help' || $command === '-h' ? 0 : 2);

@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Build a phorward validation image.
+#   build-image [--profile drupal-module] [--php 8.3] [--module PATH] [--name MACHINE_NAME]
+#               [--package VENDOR/NAME] [--dev-package PKG]... [--tag TAG] [--base-only]
+# Each profile (profiles/<name>/) builds in two stages. The base (PHP, Composer, lint tools, Drupal core +
+# core-dev, with-mariadb) is module-independent; the final stage adds one module's composer dependencies
+# and patches. --module is a checkout of that module: it supplies the dependencies the image bakes in;
+# the tree under test is NOT baked in. The package name is read from its composer.json and the machine
+# name from its single *.info.yml, unless --package / --name say otherwise.
+# --dev-package adds a dev dependency the module's tests need (repeatable), e.g. drupal/key.
+# --base-only builds just the base, tagged phorward-base:php<ver>, and needs no module.
+# Prints the tool versions recorded in the image (/opt/TOOL-VERSIONS) when done.
+set -euo pipefail
+
+PROFILE="drupal-module"
+PHP_VERSION="8.3"
+MODULE="${PHORWARD_MODULE_DIR:-$PWD}"
+NAME=""
+PACKAGE=""
+DEV_PACKAGES=""
+TAG=""
+BASE_ONLY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --profile) PROFILE="$2"; shift 2 ;;
+    --php) PHP_VERSION="$2"; shift 2 ;;
+    --module) MODULE="$2"; shift 2 ;;
+    --name) NAME="$2"; shift 2 ;;
+    --package) PACKAGE="$2"; shift 2 ;;
+    --dev-package) DEV_PACKAGES="${DEV_PACKAGES:+$DEV_PACKAGES }$2"; shift 2 ;;
+    --tag) TAG="$2"; shift 2 ;;
+    --base-only) BASE_ONLY=1; shift ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+CONTEXT="$HERE/../profiles/$PROFILE"
+[ -f "$CONTEXT/Dockerfile" ] || { echo "unknown profile: $PROFILE" >&2; exit 2; }
+
+if [ "$BASE_ONLY" = 1 ]; then
+  TAG="${TAG:-phorward-base:php${PHP_VERSION}}"
+  # The Dockerfile declares a `module` build context; an empty one satisfies it for the base target.
+  EMPTY="$(mktemp -d)"
+  trap 'rmdir "$EMPTY"' EXIT
+  docker build --target base \
+    --build-context "module=$EMPTY" \
+    --build-arg "PHP_VERSION=$PHP_VERSION" \
+    -t "$TAG" "$CONTEXT"
+  echo "built $TAG"
+  docker run --rm --network none "$TAG" cat /opt/TOOL-VERSIONS
+  exit 0
+fi
+
+if [ -z "$PACKAGE" ]; then
+  [ -f "$MODULE/composer.json" ] || { echo "no composer.json in $MODULE (use --module or --package)" >&2; exit 1; }
+  PACKAGE="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "$MODULE/composer.json")"
+fi
+if [ -z "$NAME" ]; then
+  shopt -s nullglob
+  infos=("$MODULE"/*.info.yml)
+  [ "${#infos[@]}" -eq 1 ] || { echo "expected exactly one *.info.yml in $MODULE (found ${#infos[@]}); use --name" >&2; exit 1; }
+  NAME="$(basename "${infos[0]}" .info.yml)"
+fi
+REV="$(git -C "$MODULE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+TAG="${TAG:-phorward:${NAME}-php${PHP_VERSION}-$(date +%Y%m%d)}"
+
+docker build --target final \
+  --build-context "module=$MODULE" \
+  --build-arg "PHP_VERSION=$PHP_VERSION" \
+  --build-arg "MODULE_PACKAGE=$PACKAGE" \
+  --build-arg "MODULE_NAME=$NAME" \
+  --build-arg "DEV_PACKAGES=$DEV_PACKAGES" \
+  --build-arg "MODULE_REV=$REV" \
+  -t "$TAG" -t "phorward:${NAME}-php${PHP_VERSION}" \
+  "$CONTEXT"
+
+echo "built $TAG"
+docker run --rm --network none "$TAG" cat /opt/TOOL-VERSIONS

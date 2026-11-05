@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Smoke test for a phorward validation image: runs the same sandbox flags a validation run gets
+# against a module checkout, plus deliberately broken copies, and checks the sandbox itself (no
+# network, read-only root, non-root user). Exit 0 = every check behaved as expected.
+#   smoke-test --module PATH [--image TAG] [--tests "tests/src/Unit/FooTest.php tests/src/Kernel/BarTest.php"]
+# The module mount path and name are read from the image's labels. Without --tests, the first Unit
+# test and the first Kernel test found under the module are used.
+set -uo pipefail
+
+IMAGE=""
+MODULE="${PHORWARD_MODULE_DIR:-}"
+TESTS=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --image) IMAGE="$2"; shift 2 ;;
+    --module) MODULE="$2"; shift 2 ;;
+    --tests) TESTS="$2"; shift 2 ;;
+    -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$MODULE" ] && [ -d "$MODULE" ] || { echo "need --module PATH (a module checkout)" >&2; exit 2; }
+[ -n "$IMAGE" ] || IMAGE="phorward:$(basename "$(ls "$MODULE"/*.info.yml | head -1)" .info.yml)-php8.3"
+
+docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image not found: $IMAGE" >&2; exit 2; }
+label() { docker image inspect -f "{{index .Config.Labels \"$1\"}}" "$IMAGE"; }
+M="$(label phorward.module-path)"
+NAME="$(label phorward.module-name)"
+[ -n "$M" ] && [ -n "$NAME" ] || { echo "image $IMAGE has no phorward.module-* labels; not a phorward image" >&2; exit 2; }
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "${WORK:?}"' EXIT
+FAILS=0
+
+if [ -z "$TESTS" ]; then
+  unit="$(cd "$MODULE" && find . -path '*/tests/src/Unit/*Test.php' | sort | head -1 | sed 's|^\./||')"
+  kernel="$(cd "$MODULE" && find . -path '*/tests/src/Kernel/*Test.php' | sort | head -1 | sed 's|^\./||')"
+  TESTS="$unit $kernel"
+fi
+
+stage() {   # stage <dir>: copy the module the way a run will, minus what a run never needs
+  mkdir -p "$1"
+  rsync -a --exclude=.git --exclude=vendor --exclude=node_modules "$MODULE/" "$1/"
+}
+
+sandbox() {   # sandbox <dir> <cmd...>: the limits every validation run gets
+  local dir="$1"; shift
+  docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --pids-limit 512 --memory 4g --cpus 2 \
+    --tmpfs /tmp:exec,size=1g --tmpfs /opt/drupal-project/web/sites/simpletest:mode=1777,size=1g \
+    -v "$dir:$M:ro" \
+    -e SIMPLETEST_DB="sqlite://localhost//tmp/test.sqlite" -e SIMPLETEST_BASE_URL=http://localhost \
+    "$IMAGE" "$@"
+}
+
+expect() {   # expect <pass|fail> <label> <cmd...>
+  local want="$1" label="$2"; shift 2
+  "$@" >"$WORK/out.log" 2>&1
+  local rc=$?
+  if { [ "$want" = pass ] && [ $rc -eq 0 ]; } || { [ "$want" = fail ] && [ $rc -ne 0 ]; }; then
+    echo "ok    $label (rc=$rc)"
+  else
+    echo "FAIL  $label: expected $want, rc=$rc"; tail -8 "$WORK/out.log" | sed 's/^/        /'; FAILS=$((FAILS+1))
+  fi
+}
+
+echo "image: $IMAGE  (module $NAME at $M)"
+docker run --rm --network none "$IMAGE" cat /opt/TOOL-VERSIONS | sed 's/^/  /'
+
+stage "$WORK/good"
+stage "$WORK/bad"
+mkdir -p "$WORK/bad/src" "$WORK/bad/tests/src/Unit"
+cat > "$WORK/bad/src/SmokeSyntax.php" <<'PHP'
+<?php
+function broken( {
+PHP
+cat > "$WORK/bad/src/SmokeStyle.php" <<'PHP'
+<?php
+class smoke_style{function x(){return  1;}}
+PHP
+cat > "$WORK/bad/tests/src/Unit/SmokeFailingTest.php" <<'PHP'
+<?php
+
+namespace Drupal\Tests\__NAME__\Unit;
+
+use Drupal\Tests\UnitTestCase;
+
+/**
+ * Deliberately failing test.
+ *
+ * @group __NAME__
+ */
+class SmokeFailingTest extends UnitTestCase {
+
+  /**
+   * Fails.
+   */
+  public function testFails(): void {
+    $this->assertSame(1, 2);
+  }
+
+}
+PHP
+sed -i.bak "s/__NAME__/$NAME/g" "$WORK/bad/tests/src/Unit/SmokeFailingTest.php" && rm -f "$WORK/bad/tests/src/Unit/SmokeFailingTest.php.bak"
+
+echo "-- good tree"
+expect pass "php -l (whole src/)" sandbox "$WORK/good" sh -c "find $M/src -name '*.php' -print0 | xargs -0 -n1 php -l >/dev/null"
+expect pass "phpcs"   sandbox "$WORK/good" sh -c "cd $M && phpcs --warning-severity=0"
+expect pass "phpunit ($TESTS)" sandbox "$WORK/good" sh -c "cd /opt/drupal-project && phpunit -c web/core $(printf "$M/%s " $TESTS) --no-progress"
+echo "-- broken tree"
+expect fail "php -l catches syntax error" sandbox "$WORK/bad" php -l "$M/src/SmokeSyntax.php"
+expect fail "phpcs catches style errors"  sandbox "$WORK/bad" sh -c "cd $M && phpcs --warning-severity=0 src/SmokeStyle.php"
+expect fail "phpunit catches failing test" sandbox "$WORK/bad" sh -c "cd /opt/drupal-project && phpunit -c web/core $M/tests/src/Unit/SmokeFailingTest.php --no-progress"
+echo "-- sandbox"
+expect fail "no network"          sandbox "$WORK/good" php -r 'exit(@file_get_contents("http://1.1.1.1", false, stream_context_create(["http"=>["timeout"=>3]])) === false ? 1 : 0);'
+expect fail "root fs read-only"   sandbox "$WORK/good" sh -c 'touch /etc/smoke'
+expect fail "module mount read-only" sandbox "$WORK/good" sh -c "touch $M/smoke"
+expect fail "core tree read-only" sandbox "$WORK/good" sh -c 'touch /opt/drupal-project/web/core/smoke'
+expect pass "runs as non-root"    sandbox "$WORK/good" sh -c '[ "$(id -u)" = 10001 ]'
+
+echo; [ $FAILS -eq 0 ] && echo "smoke test: all checks passed" || echo "smoke test: $FAILS check(s) FAILED"
+exit $((FAILS > 0))
