@@ -43,4 +43,4 @@ See [docs/image.md](docs/image.md) for the design and measurements.
 
 ## Licence
 
-Not chosen yet; `composer.json` says `proprietary` until it is.
+MIT. See [LICENSE](LICENSE).
