@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""authorized-key: print the authorized_keys line that lets one client key run phorward-run and nothing else.
+
+    authorized-key --public-key FILE --run /path/to/phorward-run [--from PATTERN[,PATTERN]] [--env NAME=VALUE]...
+
+Prints a single line:  restrict,command="[env NAME=VALUE ]/path/to/phorward-run"[,from="..."] <key> [comment]
+
+`restrict` turns off everything the key could otherwise do (pty, port, agent and X11 forwarding, ~/.ssh/rc);
+`command=` makes sshd run phorward-run whatever the client asked for, passing the request in
+SSH_ORIGINAL_COMMAND. The public key must be a plain key, not already carry options, and be a strong type
+(ed25519, ECDSA, or RSA of at least 3072 bits). Nothing is installed: put the line in the dedicated user's
+authorized_keys (see docs/ssh-access.md).
+"""
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+KEY_TYPES = ("ssh-ed25519", "sk-ssh-ed25519@openssh.com", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
+             "ecdsa-sha2-nistp521", "sk-ecdsa-sha2-nistp256@openssh.com", "ssh-rsa")
+PATH_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
+FROM_RE = re.compile(r"^[A-Za-z0-9.*?:/!_-]+(,[A-Za-z0-9.*?:/!_-]+)*$")
+ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*=[A-Za-z0-9_./:@+-]*$")
+COMMENT_RE = re.compile(r"^[A-Za-z0-9@._ -]*$")
+MIN_RSA_BITS = 3072
+
+
+def fail(message):
+    sys.exit(f"authorized-key: {message}")
+
+
+def read_key(path):
+    try:
+        lines = [l.strip() for l in Path(path).read_text().splitlines() if l.strip() and not l.startswith("#")]
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(f"cannot read {path}: {exc}")
+    text = Path(path).read_text()
+    if "PRIVATE KEY" in text:
+        fail(f"{path} holds a private key; give the .pub file. Private keys never go on the server")
+    if len(lines) != 1:
+        fail(f"{path} must hold exactly one public key (found {len(lines)})")
+    parts = lines[0].split(None, 2)
+    if len(parts) < 2 or parts[0] not in KEY_TYPES:
+        fail(f"{path} does not start with a public key type ({', '.join(KEY_TYPES[:4])}, ...); "
+             "a key that already carries options is refused, so nobody can smuggle options in")
+    if not re.fullmatch(r"[A-Za-z0-9+/=]+", parts[1]):
+        fail("the key body is not base64")
+    comment = parts[2].strip() if len(parts) == 3 else ""
+    if not COMMENT_RE.match(comment):
+        fail("the key comment has characters outside letters, digits and @ . _ - space")
+    try:
+        done = subprocess.run(["ssh-keygen", "-l", "-f", path], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        done = None
+    if done is not None and done.returncode != 0:
+        fail(f"ssh-keygen does not accept {path} as a public key: {done.stderr.strip()}")
+    if parts[0] == "ssh-rsa" and done is not None:
+        bits = re.match(r"(\d+)", done.stdout)
+        if bits and int(bits.group(1)) < MIN_RSA_BITS:
+            fail(f"RSA key of {bits.group(1)} bits; use ed25519 or RSA of at least {MIN_RSA_BITS} bits")
+    return parts[0], parts[1], comment
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="authorized-key", description="Print a restricted authorized_keys line.")
+    parser.add_argument("--public-key", required=True, help="the client's public key file (.pub)")
+    parser.add_argument("--run", required=True, help="absolute path of the installed phorward-run")
+    parser.add_argument("--from", dest="sources", help="only accept the key from these addresses (sshd patterns)")
+    parser.add_argument("--env", action="append", default=[], metavar="NAME=VALUE",
+                        help="environment for phorward-run, e.g. PHORWARD_POLICY=/etc/phorward/policy.json")
+    args = parser.parse_args(argv)
+
+    if not PATH_RE.match(args.run) or ".." in args.run.split("/"):
+        fail("--run must be an absolute path of letters, digits and _ . / -")
+    for item in args.env:
+        if not ENV_RE.match(item):
+            fail(f"--env {item!r}: use NAME=VALUE with an upper-case name and a plain value")
+    if args.sources is not None and not FROM_RE.match(args.sources):
+        fail("--from takes comma-separated addresses or patterns, e.g. 192.0.2.0/24 or *.example.org")
+
+    ktype, body, comment = read_key(args.public_key)
+    command = " ".join((["env"] + args.env if args.env else []) + [args.run])
+    options = ["restrict", f'command="{command}"']
+    if args.sources:
+        options.append(f'from="{args.sources}"')
+    print(",".join(options), ktype, body + (f" {comment}" if comment else ""))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

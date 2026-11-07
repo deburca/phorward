@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Access test for a phorward server, run from the CLIENT machine: proves that the key can run phorward-run and
+# that everything else is refused (another command, command injection, a shell, a pty, file transfer, port
+# forwarding). Exit 0 = every check held. It changes nothing on the server.
+#   access-test --host HOST [--port N] [--identity KEYFILE] [--ssh-option K=V]...
+#               [--tree DIR --profile NAME --module NAME]
+# HOST is whatever `ssh HOST` takes, usually an alias from ~/.ssh/config. The ssh options given here apply to
+# ssh, scp and sftp alike. With --tree, --profile and --module it also performs one real run of that tree.
+# Never run it with a key that is allowed to do more than phorward-run: it would then fail, which is the point.
+set -uo pipefail
+
+HOST="" PORT="" IDENTITY="" TREE="" PROFILE="" MODULE=""
+OPTS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --host) HOST="$2"; shift 2 ;;
+    --port) PORT="$2"; shift 2 ;;
+    --identity) IDENTITY="$2"; shift 2 ;;
+    --ssh-option) OPTS+=(-o "$2"); shift 2 ;;
+    --tree) TREE="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --module) MODULE="$2"; shift 2 ;;
+    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$HOST" ] || { echo "need --host HOST" >&2; exit 2; }
+COMMON=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes ${OPTS[@]+"${OPTS[@]}"})
+[ -z "$IDENTITY" ] || COMMON+=(-o IdentitiesOnly=yes -i "$IDENTITY")
+SSH=(ssh "${COMMON[@]}"); [ -z "$PORT" ] || SSH+=(-p "$PORT")
+SCP=(scp "${COMMON[@]}");  [ -z "$PORT" ] || SCP+=(-P "$PORT")
+SFTP=(sftp "${COMMON[@]}"); [ -z "$PORT" ] || SFTP+=(-P "$PORT")
+
+WORK="$(mktemp -d)"
+FWD_PID=""
+# Only ever signal a process we started: `kill 0` would signal our whole process group, caller included.
+stop_forward() { if [ -n "$FWD_PID" ]; then kill "$FWD_PID" 2>/dev/null; FWD_PID=""; fi; }
+trap 'stop_forward; rm -rf "${WORK:?}"' EXIT
+FAILS=0
+check() {   # check <ok|bad> <label> [detail]
+  if [ "$1" = ok ]; then echo "ok    $2${3:+ ($3)}"; else echo "FAIL  $2${3:+: $3}"; FAILS=$((FAILS + 1)); fi
+}
+json() {   # json <file> <python expression over r>: print the value, or nothing if the file is not JSON
+  python3 -I -c 'import json,sys
+try:
+    r = json.load(open(sys.argv[1])); print(eval(sys.argv[2]))
+except Exception:
+    pass' "$1" "$2"
+}
+
+# refused_by_wrapper <label> <ssh args...>: the request reaches phorward-run, which refuses it (exit 2, JSON
+# error bad_request) and, above all, nothing in the output shows the asked-for command ran.
+refused_by_wrapper() {
+  local label="$1"; shift
+  "${SSH[@]}" "$@" > "$WORK/out" 2> "$WORK/err" < /dev/null
+  local rc=$?
+  if grep -q 'uid=' "$WORK/out" "$WORK/err"; then
+    check bad "$label" "the command ran: $(head -c 80 "$WORK/out")"
+  elif [ "$rc" -eq 2 ] && [ "$(json "$WORK/out" 'r["error"]["code"]')" = bad_request ]; then
+    check ok "$label" "phorward-run refused it"
+  else
+    check bad "$label" "exit $rc, output: $(head -c 120 "$WORK/out" "$WORK/err" | tr '\n' ' ')"
+  fi
+}
+
+echo "-- what the key may do"
+"${SSH[@]}" "$HOST" phorward-run info --protocol 1 > "$WORK/info.json" 2> "$WORK/err" < /dev/null
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(json "$WORK/info.json" 'r["protocol"]')" = 1 ]; then
+  check ok "phorward-run answers over ssh" "engine $(json "$WORK/info.json" 'r["engine"]["name"]'), images: $(json "$WORK/info.json" 'len(r["images"])')"
+else
+  check bad "phorward-run answers over ssh" "exit $rc: $(head -c 200 "$WORK/err")"
+  echo; echo "access test: cannot reach phorward-run, so the refusal checks below would prove nothing"; exit 1
+fi
+if [ -n "$TREE" ]; then
+  tar -C "$TREE" -cf - . | "${SSH[@]}" "$HOST" phorward-run run --protocol 1 --profile "$PROFILE" --module "$MODULE" \
+    > "$WORK/run.json" 2> "$WORK/err"
+  rc=${PIPESTATUS[1]}
+  verdict="$(json "$WORK/run.json" 'r["verdict"]')"
+  if [ -n "$verdict" ] && [ "$verdict" != error ]; then
+    check ok "a real run over ssh gives a verdict" "$verdict, exit $rc"
+  else
+    check bad "a real run over ssh gives a verdict" "exit $rc, $(json "$WORK/run.json" 'r.get("error")')"
+  fi
+fi
+
+echo "-- what it may not do"
+refused_by_wrapper "another command is not run" "$HOST" id
+refused_by_wrapper "a command appended with ; is not run" "$HOST" 'phorward-run info --protocol 1; id'
+# shellcheck disable=SC2016  # the substitution must reach the server unexpanded
+refused_by_wrapper "a command substitution is not run" "$HOST" 'phorward-run info --protocol 1 $(id)'
+refused_by_wrapper "a pipe is not run" "$HOST" 'phorward-run info --protocol 1 | id'
+refused_by_wrapper "no command gives no shell" -T "$HOST"
+
+"${SSH[@]}" -tt "$HOST" phorward-run info --protocol 1 > "$WORK/out" 2> "$WORK/err" < /dev/null
+if grep -qi 'PTY allocation request failed' "$WORK/err"; then
+  check ok "a terminal (pty) is refused"
+else
+  check bad "a terminal (pty) is refused" "ssh -tt did not report a refused pty: $(head -c 120 "$WORK/err")"
+fi
+
+printf 'ls\nquit\n' | "${SFTP[@]}" "$HOST" > "$WORK/out" 2> "$WORK/err"
+rc=$?
+if [ "$rc" -ne 0 ] && ! grep -q 'Connected to' "$WORK/out"; then
+  check ok "sftp is refused" "exit $rc"
+else
+  check bad "sftp is refused" "exit $rc: $(head -c 120 "$WORK/out" "$WORK/err" | tr '\n' ' ')"
+fi
+"${SCP[@]}" "$HOST:/etc/hostname" "$WORK/copied" > /dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] && [ ! -s "$WORK/copied" ]; then check ok "scp is refused" "exit $rc"; else check bad "scp is refused" "exit $rc, file copied"; fi
+
+"${SSH[@]}" -o ExitOnForwardFailure=yes -R 0:127.0.0.1:22 "$HOST" phorward-run info --protocol 1 > "$WORK/out" 2> "$WORK/err" < /dev/null
+rc=$?
+if [ "$rc" -ne 0 ] && grep -qi 'forwarding failed' "$WORK/err"; then
+  check ok "remote port forwarding (-R) is refused" "exit $rc"
+else
+  check bad "remote port forwarding (-R) is refused" "exit $rc: $(head -c 160 "$WORK/err" | tr '\n' ' ')"
+fi
+
+LPORT="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+"${SSH[@]}" -v -N -L "127.0.0.1:$LPORT:127.0.0.1:22" "$HOST" > "$WORK/out" 2> "$WORK/fwd.log" < /dev/null &
+FWD_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  (exec 3<>"/dev/tcp/127.0.0.1/$LPORT") 2>/dev/null && break
+  sleep 0.5
+done
+# Use the forward: the server must refuse to open the channel, and nothing must come back through it.
+(exec 3<>"/dev/tcp/127.0.0.1/$LPORT"; timeout 3 head -c 16 <&3 > "$WORK/fwd.data") 2>/dev/null
+sleep 1
+if grep -q 'administratively prohibited' "$WORK/fwd.log" && [ ! -s "$WORK/fwd.data" ]; then
+  check ok "local port forwarding (-L) is refused"
+else
+  check bad "local port forwarding (-L) is refused" "$(grep -E 'open failed|prohibited|channel' "$WORK/fwd.log" | head -2 | tr '\n' ' ')"
+fi
+stop_forward
+
+echo; if [ "$FAILS" -eq 0 ]; then echo "access test: every check held"; else echo "access test: $FAILS check(s) FAILED"; fi
+exit $((FAILS > 0))
