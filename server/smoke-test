@@ -1,57 +1,121 @@
 #!/usr/bin/env bash
-# Smoke test for a phorward validation image: runs the same sandbox flags a validation run gets
-# against a module checkout, plus deliberately broken copies, and checks the sandbox itself (no
-# network, read-only root, non-root user). Exit 0 = every check behaved as expected.
-#   smoke-test --module PATH [--image TAG] [--tests "tests/src/Unit/FooTest.php tests/src/Kernel/BarTest.php"]
-# The module mount path and name are read from the image's labels. Without --tests, the first Unit
-# test and the first Kernel test found under the module are used.
+# Smoke test for a phorward validation image: runs the checks through phorward-run, as a client would, on a
+# good copy of a project and on deliberately broken copies, then checks the sandbox itself (no network,
+# read-only root, non-root user). Exit 0 = every check behaved as expected.
+#   smoke-test --module PATH [--profile drupal-module] [--php 8.3] [--tests "path/a path/b"]
+# The image tested is the one phorward-run would pick: phorward:<name>-php<version>, built by build-image
+# from the same project. Which checks run, which broken files are planted, and which tests are picked all come
+# from the profile's manifest (smoke section). Without --tests, the first test matching each of the manifest's
+# pick_tests patterns is used. The image's labels give the mount path.
 set -uo pipefail
 
-IMAGE=""
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PROFILE="drupal-module"
+PHP=""
 MODULE="${PHORWARD_MODULE_DIR:-}"
 TESTS=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --image) IMAGE="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --php) PHP="$2"; shift 2 ;;
     --module) MODULE="$2"; shift 2 ;;
     --tests) TESTS="$2"; shift 2 ;;
-    -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$MODULE" ] && [ -d "$MODULE" ] || { echo "need --module PATH (a module checkout)" >&2; exit 2; }
-[ -n "$IMAGE" ] || IMAGE="phorward:$(basename "$(find "$MODULE" -maxdepth 1 -name '*.info.yml' | sort | head -1)" .info.yml)-php8.3"
+[ -n "$MODULE" ] && [ -d "$MODULE" ] || { echo "need --module PATH (a project checkout)" >&2; exit 2; }
+ENGINE="${PHORWARD_ENGINE:-$(command -v podman || command -v docker || true)}"
+[ -n "$ENGINE" ] || { echo "neither podman nor docker is installed" >&2; exit 2; }
+manifest() { "$HERE/manifest-get" "$PROFILE" "$@"; }
+[ -n "$(manifest profile)" ] || { echo "unknown profile: $PROFILE" >&2; exit 2; }
+[ -n "$PHP" ] || PHP="$(manifest defaults.php)"
+NAME="$("$HERE/build-image" --profile "$PROFILE" --module "$MODULE" --print-name)" || exit 2
+IMAGE="phorward:${NAME}-php${PHP}"
 
-docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image not found: $IMAGE" >&2; exit 2; }
-label() { docker image inspect -f "{{index .Config.Labels \"$1\"}}" "$IMAGE"; }
+# Without the image every must-fail check below would pass for the wrong reason, so stop here.
+"$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image not found: $IMAGE" >&2; exit 2; }
+label() { "$ENGINE" image inspect -f "{{index .Config.Labels \"$1\"}}" "$IMAGE"; }
 M="$(label phorward.module-path)"
-NAME="$(label phorward.module-name)"
-[ -n "$M" ] && [ -n "$NAME" ] || { echo "image $IMAGE has no phorward.module-* labels; not a phorward image" >&2; exit 2; }
+[ "$(label phorward.profile)" = "$PROFILE" ] && [ -n "$M" ] \
+  || { echo "image $IMAGE is not a $PROFILE image (labels phorward.profile / phorward.module-path)" >&2; exit 2; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK:?}"' EXIT
 FAILS=0
+cat > "$WORK/policy.json" <<EOF
+{"allowed_profiles": ["$PROFILE"], "max_timeout": 900, "default_timeout": 900, "slots": 1, "slot_wait": 5,
+ "max_memory": "6g", "results_dir": "$WORK/results", "lock_dir": "$WORK/locks"}
+EOF
+
+# A database the profile offers for quick runs: SQLite if it has it, else its default.
+DB_ARGS=()
+[ -z "$(manifest databases.sqlite)" ] || DB_ARGS=(--db sqlite)
 
 if [ -z "$TESTS" ]; then
-  unit="$(cd "$MODULE" && find . -path '*/tests/src/Unit/*Test.php' | sort | head -1 | sed 's|^\./||')"
-  kernel="$(cd "$MODULE" && find . -path '*/tests/src/Kernel/*Test.php' | sort | head -1 | sed 's|^\./||')"
-  TESTS="$unit $kernel"
+  while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    picked="$(cd "$MODULE" && find . -path "$pattern" -not -path '*/vendor/*' | sort | head -1 | sed 's|^\./||')"
+    [ -z "$picked" ] || TESTS="${TESTS:+$TESTS }$picked"
+  done < <(manifest smoke.pick_tests --lines)
 fi
+TESTS_CSV="${TESTS// /,}"
 
-stage() {   # stage <dir>: copy the module the way a run will, minus what a run never needs
+stage() {   # stage <dir>: copy the project the way a run will, minus what a run never needs
   mkdir -p "$1"
   rsync -a --exclude=.git --exclude=vendor --exclude=node_modules "$MODULE/" "$1/"
 }
 
+plant() {   # plant <dir> <path> <template>: a file from the profile's smoke templates, __NAME__ filled in
+  mkdir -p "$(dirname "$1/$2")"
+  sed "s/__NAME__/$NAME/g" "$HERE/../profiles/$PROFILE/$3" > "$1/$2"
+}
+
+# run_check <pass|fail> <label> <tree> <check> [extra phorward-run options...]
+# Runs one check through phorward-run. `pass` needs exit 0 and the check passed; `fail` needs exit 1 and the
+# check failed (not an infrastructure error, which is also non-zero but proves nothing about the check).
+run_check() {
+  local want="$1" label="$2" tree="$3" check="$4"; shift 4
+  tar -C "$tree" -cf - . | PHORWARD_POLICY="$WORK/policy.json" PHORWARD_ENGINE="$ENGINE" \
+    "$HERE/phorward-run" run --protocol 1 --profile "$PROFILE" --php "$PHP" --module "$NAME" --checks "$check" "$@" \
+    > "$WORK/result.json" 2> "$WORK/run.err"
+  local rc=${PIPESTATUS[1]} status
+  status="$(python3 -I -c '
+import json, sys
+try:
+    r = json.load(open(sys.argv[1]))
+    c = [x for x in r["checks"] if x["name"] == sys.argv[2]]
+    print(c[0]["status"] if c else r.get("error", {}).get("code", "none"))
+except Exception:
+    print("no-json")' "$WORK/result.json" "$check")"
+  local wantrc=0 wantstatus=passed
+  if [ "$want" = fail ]; then wantrc=1; wantstatus=failed; fi
+  if [ "$rc" -eq "$wantrc" ] && [ "$status" = "$wantstatus" ]; then
+    echo "ok    $label (exit $rc, $check $status)"
+  else
+    echo "FAIL  $label: expected exit $wantrc and $wantstatus, got exit $rc and $status"
+    python3 -I -c '
+import json, sys
+try:
+    for c in json.load(open(sys.argv[1]))["checks"]:
+        if c["name"] == sys.argv[2] and c.get("output"):
+            print(c["output"][-1500:])
+except Exception:
+    pass' "$WORK/result.json" "$check" | tail -8 | sed 's/^/        /'
+    tail -3 "$WORK/run.err" | sed 's/^/        /'
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+TMPFS=()
+while IFS= read -r spec; do [ -z "$spec" ] || TMPFS+=(--tmpfs "$spec"); done < <(manifest tmpfs --lines)
+
 # shellcheck disable=SC2329  # invoked indirectly through expect
-sandbox() {   # sandbox <dir> <cmd...>: the limits every validation run gets
+sandbox() {   # sandbox <dir> <cmd...>: the limits every validation run gets, for checks of the sandbox itself
   local dir="$1"; shift
-  docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
-    --pids-limit 512 --memory "${SANDBOX_MEMORY:-4g}" --cpus 2 \
-    --tmpfs /tmp:exec,size=1g --tmpfs /opt/drupal-project/web/sites/simpletest:mode=1777,size=1g \
-    -v "$dir:$M:ro" \
-    -e SIMPLETEST_DB="sqlite://localhost//tmp/test.sqlite" -e SIMPLETEST_BASE_URL=http://localhost \
-    "$IMAGE" "$@"
+  "$ENGINE" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --pids-limit 512 --memory "${SANDBOX_MEMORY:-4g}" --cpus 2 ${TMPFS[@]+"${TMPFS[@]}"} \
+    -v "$dir:$M:ro" "$IMAGE" "$@"
 }
 
 expect() {   # expect <pass|fail> <label> <cmd...>
@@ -65,84 +129,82 @@ expect() {   # expect <pass|fail> <label> <cmd...>
   fi
 }
 
-echo "image: $IMAGE  (module $NAME at $M)"
-docker run --rm --network none "$IMAGE" cat /opt/TOOL-VERSIONS | sed 's/^/  /'
+echo "image: $IMAGE  (profile $PROFILE, project $NAME at $M)"
+"$ENGINE" run --rm --network none "$IMAGE" cat /opt/TOOL-VERSIONS | sed 's/^/  /'
+echo "tests picked: ${TESTS:-none}"
 
 stage "$WORK/good"
-stage "$WORK/bad"
-mkdir -p "$WORK/bad/src" "$WORK/bad/tests/src/Unit"
-cat > "$WORK/bad/src/SmokeSyntax.php" <<'PHP'
-<?php
-function broken( {
-PHP
-cat > "$WORK/bad/src/SmokeStyle.php" <<'PHP'
-<?php
-class smoke_style{function x(){return  1;}}
-PHP
-cat > "$WORK/bad/tests/src/Unit/SmokeFailingTest.php" <<'PHP'
-<?php
-
-namespace Drupal\Tests\__NAME__\Unit;
-
-use Drupal\Tests\UnitTestCase;
-
-/**
- * Deliberately failing test.
- *
- * @group __NAME__
- */
-class SmokeFailingTest extends UnitTestCase {
-
-  /**
-   * Fails.
-   */
-  public function testFails(): void {
-    $this->assertSame(1, 2);
-  }
-
-}
-PHP
-sed -i.bak "s/__NAME__/$NAME/g" "$WORK/bad/tests/src/Unit/SmokeFailingTest.php" && rm -f "$WORK/bad/tests/src/Unit/SmokeFailingTest.php.bak"
-
 echo "-- good tree"
-expect pass "php -l (whole src/)" sandbox "$WORK/good" sh -c "find $M/src -name '*.php' -print0 | xargs -0 -n1 php -l >/dev/null"
-expect pass "phpcs"   sandbox "$WORK/good" sh -c "cd $M && phpcs --warning-severity=0"
-# shellcheck disable=SC2086  # $TESTS is a space-separated list on purpose
-expect pass "phpunit ($TESTS)" sandbox "$WORK/good" sh -c "cd /opt/drupal-project && phpunit -c web/core $(printf "$M/%s " $TESTS) --no-progress"
-echo "-- broken tree"
-expect fail "php -l catches syntax error" sandbox "$WORK/bad" php -l "$M/src/SmokeSyntax.php"
-expect fail "phpcs catches style errors"  sandbox "$WORK/bad" sh -c "cd $M && phpcs --warning-severity=0 src/SmokeStyle.php"
-expect fail "phpunit catches failing test" sandbox "$WORK/bad" sh -c "cd /opt/drupal-project && phpunit -c web/core $M/tests/src/Unit/SmokeFailingTest.php --no-progress"
-echo "-- phpstan"
-mkdir -p "$WORK/stan-good" "$WORK/stan-bad"
-cat > "$WORK/stan-good/SmokeOk.php" <<'PHP'
-<?php
-function smoke_ok(int $a): int { return $a + 1; }
-PHP
-cat > "$WORK/stan-bad/SmokeBad.php" <<'PHP'
-<?php
-function smoke_bad(): int { return smoke_missing_function(); }
-PHP
-expect pass "phpstan passes clean code"  sandbox "$WORK/stan-good" sh -c "cd $M && phpstan analyse --no-progress --no-ansi --level=5 SmokeOk.php"
-expect fail "phpstan catches undefined function" sandbox "$WORK/stan-bad" sh -c "cd $M && phpstan analyse --no-progress --no-ansi --level=5 SmokeBad.php"
-echo "-- with-mariadb"
-# MariaDB and its tmpfs datadir share the container's memory limit, hence 6g.
-export SANDBOX_MEMORY=6g
-# shellcheck disable=SC2016  # the expressions must expand inside the container
-expect pass "with-mariadb sets SIMPLETEST_DB and serves queries" sandbox "$WORK/good" with-mariadb sh -c \
-  'case "$SIMPLETEST_DB" in mysql://*) ;; *) exit 1;; esac; [ "$(mariadb --no-defaults -h127.0.0.1 -udrupal -pdrupal -N -e "SELECT 1" drupal)" = 1 ]'
-expect pass "with-mariadb shuts the server down afterwards" sandbox "$WORK/good" sh -c \
-  'with-mariadb true; ! mariadb-admin --no-defaults --socket=/tmp/mariadb/sock ping >/dev/null 2>&1'
-expect pass "with-mariadb returns the command's exit status" sandbox "$WORK/good" sh -c \
-  'with-mariadb sh -c "exit 7"; [ $? -eq 7 ]'
-unset SANDBOX_MEMORY
+while IFS= read -r check; do
+  [ -n "$check" ] || continue
+  if [ "$check" = phpunit ]; then
+    if [ -z "$TESTS" ]; then echo "FAIL  phpunit: no tests found to run"; FAILS=$((FAILS + 1)); continue; fi
+    run_check pass "phpunit passes ($TESTS)" "$WORK/good" phpunit --tests "$TESTS_CSV" ${DB_ARGS[@]+"${DB_ARGS[@]}"}
+  else
+    run_check pass "$check passes on the project" "$WORK/good" "$check"
+  fi
+done < <(manifest smoke.good_checks --lines)
+
+echo "-- broken trees"
+while IFS=$'\t' read -r check file template tests; do
+  [ -n "$check" ] || continue
+  stage "$WORK/bad-$check"
+  plant "$WORK/bad-$check" "$file" "$template"
+  if [ "$check" = phpunit ]; then
+    run_check fail "phpunit catches a failing test" "$WORK/bad-$check" phpunit --tests "$tests" ${DB_ARGS[@]+"${DB_ARGS[@]}"}
+  else
+    run_check fail "$check catches a broken file" "$WORK/bad-$check" "$check"
+  fi
+done < <(manifest smoke.bad | python3 -I -c '
+import json, sys
+for check, spec in json.loads(sys.stdin.read() or "{}").items():
+    print("\t".join([check, spec["file"], spec["template"], ",".join(spec.get("tests", []))]))')
+
+echo "-- scratch trees (checks that must hold whatever state the project itself is in)"
+while IFS=$'\t' read -r check kind path template; do
+  [ -n "$check" ] || continue
+  mkdir -p "$WORK/scratch-$check-$kind"
+  plant "$WORK/scratch-$check-$kind" "$path" "$template"
+done < <(manifest smoke.scratch | python3 -I -c '
+import json, sys
+for check, kinds in json.loads(sys.stdin.read() or "{}").items():
+    for kind, files in kinds.items():
+        for path, template in files.items():
+            print("\t".join([check, kind, path, template]))')
+for dir in "$WORK"/scratch-*; do
+  [ -d "$dir" ] || continue
+  rest="${dir##*/scratch-}"; check="${rest%-*}"; kind="${rest##*-}"
+  if [ "$kind" = good ]; then
+    run_check pass "$check passes clean code" "$dir" "$check"
+  else
+    run_check fail "$check catches bad code" "$dir" "$check"
+  fi
+done
+
+if [ -n "$(manifest databases.mariadb)" ]; then
+  echo "-- with-mariadb"
+  # MariaDB and its tmpfs datadir share the container's memory limit, hence 6g.
+  export SANDBOX_MEMORY=6g
+  # shellcheck disable=SC2016  # the expressions must expand inside the container
+  expect pass "with-mariadb sets SIMPLETEST_DB and serves queries" sandbox "$WORK/good" with-mariadb sh -c \
+    'case "$SIMPLETEST_DB" in mysql://*) ;; *) exit 1;; esac; [ "$(mariadb --no-defaults -h127.0.0.1 -udrupal -pdrupal -N -e "SELECT 1" drupal)" = 1 ]'
+  expect pass "with-mariadb shuts the server down afterwards" sandbox "$WORK/good" sh -c \
+    'with-mariadb true; ! mariadb-admin --no-defaults --socket=/tmp/mariadb/sock ping >/dev/null 2>&1'
+  expect pass "with-mariadb returns the command's exit status" sandbox "$WORK/good" sh -c \
+    'with-mariadb sh -c "exit 7"; [ $? -eq 7 ]'
+  unset SANDBOX_MEMORY
+fi
+
 echo "-- sandbox"
 expect fail "no network"          sandbox "$WORK/good" php -r 'exit(@file_get_contents("http://1.1.1.1", false, stream_context_create(["http"=>["timeout"=>3]])) === false ? 1 : 0);'
 expect fail "root fs read-only"   sandbox "$WORK/good" sh -c 'touch /etc/smoke'
 expect fail "module mount read-only" sandbox "$WORK/good" sh -c "touch $M/smoke"
-expect fail "core tree read-only" sandbox "$WORK/good" sh -c 'touch /opt/drupal-project/web/core/smoke'
+while IFS= read -r path; do
+  [ -n "$path" ] || continue
+  expect fail "$path read-only" sandbox "$WORK/good" sh -c "touch $path/smoke"
+done < <(manifest smoke.readonly_paths --lines)
 # shellcheck disable=SC2016  # the expression must expand inside the container
 expect pass "runs as non-root"    sandbox "$WORK/good" sh -c '[ "$(id -u)" = 10001 ]'
 
-echo; [ $FAILS -eq 0 ] && echo "smoke test: all checks passed" || echo "smoke test: $FAILS check(s) FAILED"
+echo; if [ $FAILS -eq 0 ]; then echo "smoke test: all checks passed"; else echo "smoke test: $FAILS check(s) FAILED"; fi
 exit $((FAILS > 0))

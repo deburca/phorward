@@ -1,10 +1,28 @@
 {
   "profile": "drupal-module",
+  "description": "Sandbox for a Drupal 11 module: Drupal core and core-dev baked in, so Kernel and Unit tests run offline.",
+  "provides": [
+    "lint",
+    "phpcs",
+    "phpstan",
+    "phpunit"
+  ],
+  "build": {
+    "name_from": "info.yml",
+    "dev_packages": true,
+    "needs_lock": false,
+    "stale_hash_file": "composer.json"
+  },
+  "test_layout": "drupal",
   "defaults": {
     "php": "8.3",
     "cpus": 2,
     "pids": 512,
-    "memory": {"mariadb": "6g", "sqlite": "4g", "none": "4g"},
+    "memory": {
+      "mariadb": "6g",
+      "sqlite": "4g",
+      "none": "4g"
+    },
     "db": "mariadb"
   },
   "tmpfs": [
@@ -15,26 +33,39 @@
     "SIMPLETEST_BASE_URL": "http://localhost"
   },
   "databases": {
-    "mariadb": {"wrap": ["with-mariadb"]},
-    "sqlite": {"env": {"SIMPLETEST_DB": "sqlite://localhost//tmp/test.sqlite"}},
+    "mariadb": {
+      "wrap": [
+        "with-mariadb"
+      ]
+    },
+    "sqlite": {
+      "env": {
+        "SIMPLETEST_DB": "sqlite://localhost//tmp/test.sqlite"
+      }
+    },
     "none": {}
   },
   "checks": {
     "lint": {
       "workdir": "{module_path}",
       "argv": [
-        "sh", "-c",
+        "sh",
+        "-c",
         "out=$(find . \\( -name '*.php' -o -name '*.module' -o -name '*.inc' -o -name '*.install' -o -name '*.theme' -o -name '*.profile' \\) -not -path './vendor/*' -not -path './node_modules/*' -print0 | xargs -0 -n1 php -l 2>&1); rc=$?; printf '%s\\n' \"$out\" | grep -v '^No syntax errors detected'; exit $rc"
       ]
     },
     "phpcs": {
       "workdir": "{module_path}",
-      "argv": ["phpcs", "--warning-severity=0"]
+      "argv": [
+        "phpcs",
+        "--warning-severity=0"
+      ]
     },
     "phpstan": {
       "workdir": "{module_path}",
       "argv": [
-        "sh", "-c",
+        "sh",
+        "-c",
         "if [ -f phpstan.neon ] || [ -f phpstan.neon.dist ]; then phpstan analyse --no-progress --no-ansi --memory-limit=1G; else phpstan analyse --no-progress --no-ansi --memory-limit=1G .; fi"
       ]
     },
@@ -42,11 +73,60 @@
       "workdir": "/opt/drupal-project",
       "uses_db": true,
       "argv": [
-        "sh", "-c",
+        "sh",
+        "-c",
         "find \"$1\" \\( -path '*/tests/src/Unit/*Test.php' -o -path '*/tests/src/Kernel/*Test.php' \\) -not -path '*/vendor/*' -print0 | sort -z | xargs -0 phpunit -c web/core --no-progress",
-        "sh", "{module_path}"
+        "sh",
+        "{module_path}"
       ],
-      "argv_tests": ["phpunit", "-c", "web/core", "--no-progress", "{tests}"]
+      "argv_tests": [
+        "phpunit",
+        "-c",
+        "web/core",
+        "--no-progress",
+        "{tests}"
+      ]
     }
+  },
+  "smoke": {
+    "pick_tests": [
+      "*/tests/src/Unit/*Test.php",
+      "*/tests/src/Kernel/*Test.php"
+    ],
+    "good_checks": [
+      "lint",
+      "phpcs",
+      "phpunit"
+    ],
+    "bad": {
+      "lint": {
+        "file": "src/SmokeSyntax.php",
+        "template": "smoke/SmokeSyntax.php"
+      },
+      "phpcs": {
+        "file": "src/SmokeStyle.php",
+        "template": "smoke/SmokeStyle.php"
+      },
+      "phpunit": {
+        "file": "tests/src/Unit/SmokeFailingTest.php",
+        "template": "smoke/SmokeFailingTest.php",
+        "tests": [
+          "tests/src/Unit/SmokeFailingTest.php"
+        ]
+      }
+    },
+    "scratch": {
+      "phpstan": {
+        "good": {
+          "SmokeOk.php": "smoke/SmokeOk.php"
+        },
+        "bad": {
+          "SmokeBad.php": "smoke/SmokeBad.php"
+        }
+      }
+    },
+    "readonly_paths": [
+      "/opt/drupal-project/web/core"
+    ]
   }
 }

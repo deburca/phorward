@@ -1,0 +1,25 @@
+{
+    "name": "phorward/php-library-sample",
+    "description": "Minimal PHP library used to build and smoke-test the php-library profile.",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.3"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "Sample\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Sample\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

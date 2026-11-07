@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""manifest-get <profile> <dotted.path> [--lines|--keys]: print a value from profiles/<profile>/manifest.json.
+
+Scalars print as they are (booleans as true/false), objects and arrays as JSON. --lines prints each element of
+an array (or each string of a list) on its own line; --keys prints an object's keys one per line. A missing
+path prints nothing and exits 0, so shell callers can test with `[ -n "$value" ]`.
+"""
+import json
+import sys
+from pathlib import Path
+
+PROFILES = Path(__file__).resolve().parent.parent / "profiles"
+
+
+def main(argv):
+    if len(argv) < 3 or len(argv) > 4 or (len(argv) == 4 and argv[3] not in ("--lines", "--keys")):
+        sys.exit(__doc__)
+    profile, path = argv[1], argv[2]
+    mode = argv[3] if len(argv) == 4 else ""
+    try:
+        node = json.loads((PROFILES / profile / "manifest.json").read_text())
+    except (OSError, ValueError) as exc:
+        sys.exit(f"manifest-get: cannot read the manifest of profile {profile}: {exc}")
+    for part in [p for p in path.split(".") if p]:
+        node = node.get(part) if isinstance(node, dict) else None
+    if node is None:
+        return
+    if mode == "--keys":
+        print("\n".join(node) if isinstance(node, dict) else "")
+    elif mode == "--lines":
+        for item in node if isinstance(node, list) else [node]:
+            print(item if isinstance(item, str) else json.dumps(item))
+    elif isinstance(node, bool):
+        print("true" if node else "false")
+    elif isinstance(node, (dict, list)):
+        print(json.dumps(node))
+    else:
+        print(node)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

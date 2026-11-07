@@ -1,0 +1,119 @@
+{
+  "profile": "php-library",
+  "description": "Sandbox for a plain PHP library or application: the project's own composer.lock is installed at build time, so phpunit, phpcs and phpstan run offline.",
+  "provides": [
+    "lint",
+    "phpcs",
+    "phpstan",
+    "phpunit"
+  ],
+  "build": {
+    "name_from": "composer-package",
+    "dev_packages": false,
+    "needs_lock": true,
+    "stale_hash_file": "composer.lock"
+  },
+  "test_layout": "flat",
+  "defaults": {
+    "php": "8.3",
+    "cpus": 2,
+    "pids": 512,
+    "memory": {
+      "none": "2g"
+    },
+    "db": "none"
+  },
+  "tmpfs": [
+    "/tmp:exec,size=1g"
+  ],
+  "env": {
+    "HOME": "/tmp",
+    "COMPOSER_HOME": "/tmp/.composer"
+  },
+  "databases": {
+    "none": {}
+  },
+  "checks": {
+    "lint": {
+      "workdir": "{module_path}",
+      "argv": [
+        "sh",
+        "-c",
+        "out=$(find . -name '*.php' -not -path './vendor/*' -not -path './node_modules/*' -print0 | xargs -0 -n1 php -l 2>&1); rc=$?; printf '%s\\n' \"$out\" | grep -v '^No syntax errors detected'; exit $rc"
+      ]
+    },
+    "phpcs": {
+      "workdir": "/tmp",
+      "argv": [
+        "with-project",
+        "phorward-check",
+        "phpcs"
+      ]
+    },
+    "phpstan": {
+      "workdir": "/tmp",
+      "argv": [
+        "with-project",
+        "phorward-check",
+        "phpstan"
+      ]
+    },
+    "phpunit": {
+      "workdir": "/tmp",
+      "tests_prefix": "",
+      "argv": [
+        "with-project",
+        "phorward-check",
+        "phpunit"
+      ],
+      "argv_tests": [
+        "with-project",
+        "phorward-check",
+        "phpunit",
+        "{tests}"
+      ]
+    }
+  },
+  "smoke": {
+    "pick_tests": [
+      "*/tests/*Test.php"
+    ],
+    "good_checks": [
+      "lint",
+      "phpcs",
+      "phpunit"
+    ],
+    "bad": {
+      "lint": {
+        "file": "src/SmokeSyntax.php",
+        "template": "smoke/SmokeSyntax.php"
+      },
+      "phpcs": {
+        "file": "src/SmokeStyle.php",
+        "template": "smoke/SmokeStyle.php"
+      },
+      "phpunit": {
+        "file": "tests/SmokeFailingTest.php",
+        "template": "smoke/SmokeFailingTest.php",
+        "tests": [
+          "tests/SmokeFailingTest.php"
+        ]
+      }
+    },
+    "scratch": {
+      "phpstan": {
+        "good": {
+          "composer.json": "smoke/composer.json",
+          "src/SmokeOk.php": "smoke/SmokeOk.php"
+        },
+        "bad": {
+          "composer.json": "smoke/composer.json",
+          "src/SmokeBad.php": "smoke/SmokeBad.php"
+        }
+      }
+    },
+    "readonly_paths": [
+      "/opt/vendor"
+    ]
+  }
+}

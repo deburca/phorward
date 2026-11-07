@@ -13,7 +13,7 @@
 # time, never baked in.
 #
 # Build with server/build-image, which supplies the `module` build context (a checkout of the
-# module, used only to resolve its composer dependencies and patches) and the MODULE_* build args.
+# module, used only to resolve its composer dependencies and patches) and the PROJECT_* build args.
 ARG PHP_VERSION=8.3
 FROM docker.io/library/composer:2 AS composer
 
@@ -86,25 +86,30 @@ FROM base AS final
 
 # The module's dependencies and patches resolve as in CI: it is installed via a path repository
 # (symlink:false), then its copy is replaced by an empty mount point for the tree under test.
-#   MODULE_PACKAGE   composer package name of the module (vendor/name)
-#   MODULE_NAME      Drupal machine name; the tree under test is mounted at web/modules/contrib/<name>
+#   PROJECT_PACKAGE  composer package name of the module (vendor/name)
+#   PROJECT_NAME     Drupal machine name; the tree under test is mounted at web/modules/contrib/<name>
 #   DEV_PACKAGES     extra dev dependencies the module's tests need, space separated
-ARG MODULE_PACKAGE
-ARG MODULE_NAME
+#   PROJECT_REV      revision of the checkout, recorded for humans
+#   LOCK_SHA256      hash of the module's composer.json, recorded in a label so a stale image can be recognised
+ARG PROJECT_PACKAGE
+ARG PROJECT_NAME
 ARG DEV_PACKAGES=""
-ARG MODULE_REV=unknown
+ARG PROJECT_REV=unknown
+ARG LOCK_SHA256=unknown
 COPY --from=module / /tmp/module-src
-RUN test -n "$MODULE_PACKAGE" && test -n "$MODULE_NAME" \
+RUN test -n "$PROJECT_PACKAGE" && test -n "$PROJECT_NAME" \
  && rm -rf /tmp/module-src/.git \
  && cd /opt/drupal-project \
  && composer config repositories.module '{"type":"path","url":"/tmp/module-src","options":{"symlink":false}}' \
- && composer require "${MODULE_PACKAGE}:@dev" --no-progress --prefer-dist \
+ && composer require "${PROJECT_PACKAGE}:@dev" --no-progress --prefer-dist \
  && if [ -n "$DEV_PACKAGES" ]; then composer require --dev $DEV_PACKAGES --no-progress --prefer-dist; fi \
- && rm -rf "web/modules/contrib/${MODULE_PACKAGE#*/}" "web/modules/contrib/${MODULE_NAME}" /tmp/module-src \
- && mkdir -p "web/modules/contrib/${MODULE_NAME}" \
+ && INSTALLED="$(composer show --path "$PROJECT_PACKAGE" | awk '{print $2}')" \
+ && test -n "$INSTALLED" && test -d "$INSTALLED" \
+ && rm -rf "$INSTALLED" "web/modules/contrib/${PROJECT_NAME}" /tmp/module-src \
+ && mkdir -p "web/modules/contrib/${PROJECT_NAME}" \
  && composer clear-cache \
- && echo "module=${MODULE_PACKAGE}" >> /opt/TOOL-VERSIONS \
- && echo "module-rev=${MODULE_REV}" >> /opt/TOOL-VERSIONS
+ && echo "module=${PROJECT_PACKAGE}" >> /opt/TOOL-VERSIONS \
+ && echo "module-rev=${PROJECT_REV}" >> /opt/TOOL-VERSIONS
 
 # Non-root; /opt is read-only to it. Runtime writable space is tmpfs mounts, not image layers.
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin validate \
@@ -117,7 +122,8 @@ ENV PATH="/opt/lint-tools/vendor/bin:/opt/drupal-project/vendor/bin:${PATH}" \
 # The scripts that run the image read the mount path from these labels instead of assuming a module.
 LABEL org.opencontainers.image.title="phorward" \
       org.opencontainers.image.description="Sandboxed PHP/Drupal validation: phpcs, phpstan, php -l, phpunit" \
-      org.opencontainers.image.revision="${MODULE_REV}" \
+      org.opencontainers.image.revision="${PROJECT_REV}" \
       phorward.profile="drupal-module" \
-      phorward.module-name="${MODULE_NAME}" \
-      phorward.module-path="/opt/drupal-project/web/modules/contrib/${MODULE_NAME}"
+      phorward.module-name="${PROJECT_NAME}" \
+      phorward.module-path="/opt/drupal-project/web/modules/contrib/${PROJECT_NAME}" \
+      phorward.lock-sha256="${LOCK_SHA256}"

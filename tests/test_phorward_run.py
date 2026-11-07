@@ -301,6 +301,58 @@ class RunTests(WrapperCase):
         self.assertEqual(json.loads(stored.read_text())["error"]["code"], "cancelled")
 
 
+class LibraryProfileTests(WrapperCase):
+    """The wrapper follows the profile's manifest: here a php-library image, which has no database."""
+
+    def setUp(self):
+        super().setUp()
+        self.policy["allowed_profiles"] = ["php-library"]
+        self.library = {"FAKE_PROFILE": "php-library"}
+
+    def run_library(self, request, tar=None):
+        env = self.env(**self.library)
+        return self.run_wrapper(request, tar, env=env)
+
+    def test_defaults_to_no_database_and_less_memory(self):
+        rc, result, _ = self.run_library("run --protocol 1 --profile php-library")
+        self.assertEqual(rc, 0, result)
+        self.assertEqual(result["db"], "none")
+        self.assertEqual(result["limits"]["applied"]["memory"], "2g")
+        self.assertEqual(result["profile"], "php-library")
+
+    def test_a_database_the_profile_lacks_is_refused(self):
+        for db in ("mariadb", "sqlite"):
+            with self.subTest(db=db):
+                rc, result, _ = self.run_library(f"run --protocol 1 --profile php-library --db {db}")
+                self.assertEqual((rc, result["error"]["code"]), (2, "bad_request"))
+                self.assertIn("none", result["error"]["message"])
+        self.assertEqual(self.container_runs(), [])
+
+    def test_checks_run_through_with_project_and_use_the_mount_path(self):
+        self.run_library("run --protocol 1 --profile php-library --checks phpcs")
+        (call,) = self.container_runs()
+        self.assertEqual(call[call.index("phorward:smoke-php8.3") + 1:], ["with-project", "phorward-check", "phpcs"])
+        mounts = [call[i + 1] for i, a in enumerate(call) if a == "-v"]
+        self.assertTrue(mounts[0].endswith(f":{MODULE_PATH}:ro"))
+        self.assertIn("HOME=/tmp", call)
+
+    def test_selected_tests_are_relative_to_the_project_copy(self):
+        tar = make_tar({"composer.json": b"{}", "tests/ATest.php": b"<?php\n"})
+        self.run_library("run --protocol 1 --profile php-library --checks phpunit --tests tests/ATest.php", tar)
+        (call,) = self.container_runs()
+        self.assertEqual(call[-1], "tests/ATest.php", "no mount-path prefix: the copy is the working directory")
+        self.assertNotIn("with-mariadb", call)
+
+    def test_profile_not_in_policy_is_refused(self):
+        self.policy["allowed_profiles"] = ["drupal-module"]
+        rc, result, _ = self.run_library("run --protocol 1 --profile php-library")
+        self.assertEqual((rc, result["error"]["code"]), (2, "profile_not_allowed"))
+
+    def test_the_image_of_another_profile_is_not_chosen(self):
+        rc, result, _ = self.run_wrapper("run --protocol 1 --profile php-library", env=self.env())
+        self.assertEqual((rc, result["error"]["code"]), (2, "no_image"), "the fake image is labelled drupal-module")
+
+
 class RefusalTests(WrapperCase):
     def test_request_syntax(self):
         for request, code in [

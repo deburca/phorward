@@ -53,7 +53,7 @@ Options may appear in any order and at most once. Unknown options are refused, n
 |---|---|---|---|
 | `--protocol` | `1` | required | A different number is refused with `protocol_mismatch` |
 | `--profile` | profile name, e.g. `drupal-module` | server default | Must be allowed by policy |
-| `--module` | module machine name, e.g. `hivelog` | none | Picks among images of the same profile and PHP version when a server holds several modules. Refused with `ambiguous_image` if more than one image matches and this is absent |
+| `--module` | module machine name, e.g. `mymodule` | none | Picks among images of the same profile and PHP version when a server holds several modules. Refused with `ambiguous_image` if more than one image matches and this is absent |
 | `--php` | `8.3`, `8.5`, ... | profile default (`8.3` for `drupal-module`) | Must be an installed image allowed by policy |
 | `--checks` | comma list from `lint`, `phpcs`, `phpstan`, `phpunit` | all four | Run in that order, whatever order is given |
 | `--db` | `mariadb`, `sqlite`, `none` | `mariadb` | Applies to `phpunit` |
@@ -102,7 +102,7 @@ marked *optional* are omitted rather than `null`.
   "started_at": "2026-11-07T09:15:00Z",
   "duration_ms": 187342,
   "profile": "drupal-module",
-  "image": "phorward:hivelog-php8.3",
+  "image": "phorward:mymodule-php8.3",
   "tool_versions": {"php": "8.3.36", "phpcs": "4.0.4", "phpstan": "2.3.5", "phpunit": "11.5.57"},
   "limits": {
     "requested": {"memory": "8g", "cpus": 2, "pids": 512, "timeout": 1800},
@@ -205,8 +205,8 @@ report the connection failure rather than a code failure. The values 70 and 75 a
   "kit_version": "0.1.0",
   "engine": {"name": "podman", "version": "5.7.0", "rootless": true},
   "policy": {"max_memory": "6g", "max_cpus": 2, "max_pids": 1024, "max_timeout": 900, "slots": 2},
-  "images": [{"profile": "drupal-module", "php": "8.3", "tag": "phorward:hivelog-php8.3",
-              "module_name": "hivelog", "built": "2026-11-05"}],
+  "images": [{"profile": "drupal-module", "php": "8.3", "tag": "phorward:mymodule-php8.3",
+              "module_name": "mymodule", "built": "2026-11-05"}],
   "host": {"cpus": 16, "memory_bytes": 98784247808, "load_1m": 0.3}
 }
 ```

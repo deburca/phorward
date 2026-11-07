@@ -14,13 +14,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm]
-        php: ["8.3"]
+        include:
+          - {os: ubuntu-latest, php: "8.3", profile: drupal-module, project: tests/fixtures/smoke_module}
+          - {os: ubuntu-latest, php: "8.3", profile: php-library, project: tests/fixtures/php_library_sample}
+          - {os: ubuntu-24.04-arm, php: "8.3", profile: drupal-module, project: tests/fixtures/smoke_module}
+          - {os: ubuntu-24.04-arm, php: "8.3", profile: php-library, project: tests/fixtures/php_library_sample}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Build the image from the fixture module
-        run: server/build-image --module tests/fixtures/smoke_module --php "${{ matrix.php }}"
+      - name: Build the image from the fixture project
+        run: server/build-image --profile "${{ matrix.profile }}" --module "${{ matrix.project }}" --php "${{ matrix.php }}"
       - name: Smoke test
-        run: server/smoke-test --module tests/fixtures/smoke_module --image "phorward:smoke_module-php${{ matrix.php }}"
+        run: server/smoke-test --profile "${{ matrix.profile }}" --module "${{ matrix.project }}" --php "${{ matrix.php }}"

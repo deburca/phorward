@@ -30,13 +30,15 @@ def option(name):
 cmd = args[0] if args else ""
 if cmd == "--version":
     print(os.environ.get("FAKE_VERSION", "Docker version 29.0.0, build fake"))
+elif cmd == "build":
+    print("fake build")
 elif cmd == "info":
     print("[name=rootless]" if "podman" not in os.environ.get("FAKE_VERSION", "") else "true")
 elif cmd == "images":
     print(os.environ.get("FAKE_IMAGES", DEFAULT_IMAGES))
 elif cmd == "image" and args[1] == "inspect":
     tag = args[-1]
-    labels = {"phorward.profile": "drupal-module", "phorward.module-name": "smoke",
+    labels = {"phorward.profile": os.environ.get("FAKE_PROFILE", "drupal-module"), "phorward.module-name": "smoke",
               "phorward.module-path": MODULE_PATH}
     print(json.dumps(labels) + "|2026-11-05T12:00:00Z")
 elif cmd == "run":

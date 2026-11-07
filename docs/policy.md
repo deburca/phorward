@@ -87,7 +87,7 @@ These are starting points. Measure with the saturation test below before trustin
 fork bomb), while it times probe commands you give it against the other services on the host:
 
 ```bash
-server/hostile-test --module ~/path/to/module --module-name mymodule \
+server/hostile-test --module ~/path/to/module --profile drupal-module \
   --probe 'curl -fsS -o /dev/null http://127.0.0.1:8123' --timeout 30
 ```
 

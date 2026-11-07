@@ -29,12 +29,20 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$MODULE" ] && [ -d "$MODULE" ] || { echo "need --module PATH (a module checkout)" >&2; exit 2; }
-[ -n "$IMAGE" ] || IMAGE="phorward:$(basename "$(find "$MODULE" -maxdepth 1 -name '*.info.yml' | sort | head -1)" .info.yml)-php8.3"
-docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image not found: $IMAGE" >&2; exit 2; }
-M="$(docker image inspect -f '{{index .Config.Labels "phorward.module-path"}}' "$IMAGE")"
-NAME="$(docker image inspect -f '{{index .Config.Labels "phorward.module-name"}}' "$IMAGE")"
-[ -n "$M" ] && [ -n "$NAME" ] || { echo "image $IMAGE has no phorward.module-* labels; not a phorward image" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ENGINE="${PHORWARD_ENGINE:-$(command -v podman || command -v docker || true)}"
+[ -n "$ENGINE" ] || { echo "neither podman nor docker is installed" >&2; exit 2; }
+if [ -z "$IMAGE" ]; then
+  # The image build-image would have made for this checkout with the profile's default PHP version.
+  IMAGE="phorward:$("$HERE/build-image" --profile drupal-module --module "$MODULE" --print-name)-php$("$HERE/manifest-get" drupal-module defaults.php)" || exit 2
+fi
+"$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image not found: $IMAGE" >&2; exit 2; }
+M="$("$ENGINE" image inspect -f '{{index .Config.Labels "phorward.module-path"}}' "$IMAGE")"
+NAME="$("$ENGINE" image inspect -f '{{index .Config.Labels "phorward.module-name"}}' "$IMAGE")"
+[ -n "$M" ] && [ -n "$NAME" ] || { echo "image $IMAGE has no phorward.module-* labels; not a phorward image" >&2; exit 2; }
+# The comparison runs Drupal's own phpunit configuration against Drupal databases; other profiles have none.
+[ "$("$ENGINE" image inspect -f '{{index .Config.Labels "phorward.profile"}}' "$IMAGE")" = drupal-module ] \
+  || { echo "parity-check compares databases for Drupal Kernel tests and only supports the drupal-module profile" >&2; exit 2; }
 NET=phorward-parity-net
 DB=phorward-parity-mysql
 mkdir -p "$OUT"
@@ -43,11 +51,11 @@ mkdir -p "$SRC"
 rsync -a --exclude=.git --exclude=vendor --exclude=node_modules "$MODULE/" "$SRC/"
 
 # shellcheck disable=SC2329  # invoked through the EXIT trap
-cleanup() { docker rm -f "$DB" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1; }
+cleanup() { "$ENGINE" rm -f "$DB" >/dev/null 2>&1; "$ENGINE" network rm "$NET" >/dev/null 2>&1; }
 trap cleanup EXIT
 
 shard_files() {   # shard_files <i>: the test files of shard i/SHARDS, module-relative paths made absolute
-  docker run --rm --network none -v "$SRC:$M:ro" -v "$HERE/shard-tests.py:/shard-tests.py:ro" "$IMAGE" \
+  "$ENGINE" run --rm --network none -v "$SRC:$M:ro" -v "$HERE/shard-tests.py:/shard-tests.py:ro" "$IMAGE" \
     python3 /shard-tests.py "$M" "$1/$SHARDS"
 }
 
@@ -57,6 +65,7 @@ run_phase() {   # run_phase <sqlite|mysql>
   for i in $(seq 1 "$SHARDS"); do
     mkdir -p "$OUT/$phase/shard$i"; chmod 777 "$OUT/$phase/shard$i"
     local files; files="$(shard_files "$i")"
+    tr ' ' '\n' <<<"$files" > "$OUT/$phase/shard$i/files"   # for the report: which test files this shard was given
     local netargs dburl
     local wrap="" mem=4g
     case "$phase" in
@@ -65,7 +74,7 @@ run_phase() {   # run_phase <sqlite|mysql>
       mysql) netargs=(--network "$NET"); dburl="mysql://drupal:drupal@$DB/d$i" ;;
     esac
     (
-      docker run --rm "${netargs[@]}" --read-only --cap-drop ALL --security-opt no-new-privileges \
+      "$ENGINE" run --rm "${netargs[@]}" --read-only --cap-drop ALL --security-opt no-new-privileges \
         --pids-limit 1024 --memory "$mem" --cpus "$CPUS" \
         --tmpfs /tmp:exec,size=1g --tmpfs /opt/drupal-project/web/sites/simpletest:mode=1777,size=1g \
         -v "$SRC:$M:ro" -v "$OUT/$phase/shard$i:/results" \
@@ -81,13 +90,13 @@ run_phase() {   # run_phase <sqlite|mysql>
 }
 
 start_mysql() {
-  docker network create --internal "$NET" >/dev/null
-  docker run -d --name "$DB" --network "$NET" --memory 4g --cpus "$CPUS" \
+  "$ENGINE" network create --internal "$NET" >/dev/null
+  "$ENGINE" run -d --name "$DB" --network "$NET" --memory 4g --cpus "$CPUS" \
     -e MYSQL_ROOT_PASSWORD=root -e MYSQL_USER=drupal -e MYSQL_PASSWORD=drupal \
     --tmpfs /var/lib/mysql docker.io/library/mysql:8.0 --skip-log-bin --innodb-flush-log-at-trx-commit=0 >/dev/null
-  for _ in $(seq 1 60); do docker exec "$DB" mysqladmin -uroot -proot ping --silent >/dev/null 2>&1 && break; sleep 2; done
+  for _ in $(seq 1 60); do "$ENGINE" exec "$DB" mysqladmin -uroot -proot ping --silent >/dev/null 2>&1 && break; sleep 2; done
   for i in $(seq 1 "$SHARDS"); do
-    docker exec "$DB" mysql -uroot -proot -e "CREATE DATABASE d$i; GRANT ALL ON *.* TO 'drupal'@'%'; FLUSH PRIVILEGES;" 2>/dev/null
+    "$ENGINE" exec "$DB" mysql -uroot -proot -e "CREATE DATABASE d$i; GRANT ALL ON *.* TO 'drupal'@'%'; FLUSH PRIVILEGES;" 2>/dev/null
   done
 }
 
@@ -99,18 +108,35 @@ done
 python3 - "$OUT" "$PHASES" >"$OUT/report.txt" <<'PY'
 import sys, glob, xml.etree.ElementTree as ET
 out = sys.argv[1]
+lost = []   # test files that were handed to a shard but produced no test result there
 def load(phase):
     res = {}
-    for f in glob.glob(f"{out}/{phase}/shard*/junit.xml"):
-        for tc in ET.parse(f).getroot().iter("testcase"):
+    for shard in sorted(glob.glob(f"{out}/{phase}/shard*")):
+        ran = set()
+        try:
+            root = ET.parse(f"{shard}/junit.xml").getroot()
+        except (OSError, ET.ParseError):
+            root = None
+        for tc in (root.iter("testcase") if root is not None else []):
             key = f"{tc.get('class') or tc.get('classname')}::{tc.get('name')}"
             kids = {c.tag for c in tc}
             res[key] = ("fail" if kids & {"failure", "error"} else "skip" if "skipped" in kids else "pass")
+            ran.add(tc.get("file"))
+        try:
+            given = [l.strip() for l in open(f"{shard}/files") if l.strip()]
+        except OSError:
+            given = []
+        lost.extend(f"{phase}: {f}" for f in given if f not in ran)
     return res
 phases = sys.argv[2].split(",")
 base = "mysql" if "mysql" in phases else phases[0]
 data = {ph: load(ph) for ph in phases}
-bad = any(not r for r in data.values())
+bad = any(not r for r in data.values()) or bool(lost)
+if lost:
+    print("test files that ran no tests (every phase would miss them alike, so a comparison cannot see this):")
+    for item in lost:
+        print("  ", item)
+    print("  (PHPUnit ignores a docblock @group on a class that has attributes; use #[Group('name')])")
 for name, r in data.items():
     c = {s: sum(v == s for v in r.values()) for s in ("pass", "fail", "skip")}
     print(f"{name}: {len(r)} tests  pass={c['pass']} fail={c['fail']} skip={c['skip']}")

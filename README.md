@@ -12,7 +12,7 @@ configuration, `doctor` and `server:install` are not written yet, and the packag
 | Part | Where | State |
 |---|---|---|
 | Image profiles | `profiles/<name>/` | `drupal-module` works (PHP 8.3 and 8.5) |
-| Server tools | `server/` | `build-image`, `smoke-test`, `parity-check`, `shard-tests.py` |
+| Server tools | `server/` | `phorward-run`, `build-image`, `smoke-test`, `hostile-test`, `parity-check`, `shard-tests.py` |
 | Client | `bin/phorward`, `src/` | placeholder |
 
 A validation image has two stages: a **base** (PHP, Composer, lint tools, Drupal core with core-dev, a
@@ -33,6 +33,7 @@ under test is mounted read-only at run time and never baked in.
 ```bash
 server/build-image --module ~/path/to/module --php 8.3 --dev-package drupal/key
 server/smoke-test --module ~/path/to/module
+server/build-image --profile php-library --module ~/path/to/library   # a plain PHP project
 server/parity-check --module ~/path/to/module --phases mariadb
 ```
 
@@ -47,8 +48,9 @@ server/phorward-run info --protocol 1
 Limits are the server's, set in a policy file ([docs/policy.md](docs/policy.md)). After changing it, check it with
 `server/hostile-test`, which fills the run slots with hostile samples while timing the host's other services.
 
-`build-image` reads the package name from the module's `composer.json` and the machine name from its
-single `*.info.yml`. The image records the mount path and name as labels (`phorward.module-path`,
+`build-image` builds an image from a profile ([docs/profiles.md](docs/profiles.md)): `drupal-module` for a Drupal
+module, `php-library` for a plain PHP project. It reads the package name from `composer.json` and the project name
+from where the profile says (a Drupal module's `*.info.yml`, or the package name). The image records the mount path and name as labels (`phorward.module-path`,
 `phorward.module-name`), which the other tools read.
 
 See [docs/image.md](docs/image.md) for the design and measurements.
@@ -57,7 +59,7 @@ See [docs/image.md](docs/image.md) for the design and measurements.
 
 ```bash
 python3 -I -m unittest discover -s tests -v   # unit tests for server/shard-tests.py
-shellcheck server/build-image server/smoke-test server/parity-check profiles/*/with-mariadb
+shellcheck server/build-image server/smoke-test server/parity-check server/hostile-test profiles/*/with-* profiles/*/phorward-check
 ```
 
 GitHub Actions (`.github/workflows/`) runs these and `composer validate` on every push. A heavier workflow

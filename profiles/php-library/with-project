@@ -1,0 +1,20 @@
+#!/bin/sh
+# with-project <command...>: run <command> in a writable copy of the tree under test (mounted read-only at
+# /project) that has the image's baked vendor/ and a freshly generated autoloader. The copy lives in /tmp,
+# which is a tmpfs at run time. The command's exit status is returned.
+set -eu
+SRC="${PHORWARD_TREE:-/project}"
+DEST=/tmp/project
+# A failure here is not the project's fault, so it must not look like a failed check: exit 125 is what the
+# wrapper reports as "the check never ran" (an infrastructure error), not as a failure.
+setup_failed() { echo "with-project: could not set up the project copy: $1" >&2; exit 125; }
+mkdir -p "$DEST" || setup_failed "mkdir"
+cp -R --no-preserve=ownership "$SRC"/. "$DEST"/ || setup_failed "copying the tree"
+rm -rf "$DEST/vendor"
+cp -R --no-preserve=ownership /opt/vendor "$DEST/vendor" || setup_failed "copying vendor"
+# The baked vendor/ is read-only in the image; the copy must be writable so the autoloader can be regenerated.
+chmod -R u+w "$DEST/vendor" || setup_failed "making vendor writable"
+cd "$DEST"
+[ -f composer.json ] || setup_failed "no composer.json in the tree under test"
+composer dump-autoload --no-interaction --no-scripts --quiet || setup_failed "composer dump-autoload"
+exec "$@"

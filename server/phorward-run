@@ -36,7 +36,6 @@ KIT_DIR = Path(__file__).resolve().parent.parent
 EXIT_PASSED, EXIT_FAILED, EXIT_REFUSED, EXIT_INFRA, EXIT_BUSY = 0, 1, 2, 70, 75
 
 CHECK_ORDER = ("lint", "phpcs", "phpstan", "phpunit")
-DB_CHOICES = ("mariadb", "sqlite", "none")
 
 POLICY_DEFAULTS = {
     "max_memory": "6g",
@@ -462,7 +461,8 @@ class Run:
             argv = []
             for item in check["argv_tests"]:
                 if item == "{tests}":
-                    argv += [f"{module_path}/{t}" for t in tests]
+                    prefix = check.get("tests_prefix", "{module_path}/").replace("{module_path}", module_path)
+                    argv += [f"{prefix}{t}" for t in tests]
                 else:
                     argv.append(item.replace("{module_path}", module_path))
         else:
@@ -676,21 +676,23 @@ def do_run(options, policy):
     if profile not in policy["allowed_profiles"]:
         raise Refused("profile_not_allowed", f"profile not allowed by policy: {profile}")
 
-    checks = list(CHECK_ORDER)
+    manifest = load_manifest(profile)
+    available = [c for c in CHECK_ORDER if c in manifest["checks"]]
+    checks = list(available)
     if "--checks" in options:
         asked = options["--checks"].split(",")
-        bad = [c for c in asked if c not in CHECK_ORDER]
+        bad = [c for c in asked if c not in available]
         if bad:
-            raise Refused("bad_request", f"unknown check: {bad[0]}")
-        checks = [c for c in CHECK_ORDER if c in asked]
-    db = options.get("--db") or "mariadb"
-    if db not in DB_CHOICES:
-        raise Refused("bad_request", f"unknown database: {db}")
+            raise Refused("bad_request", f"check not available for profile {profile}: {bad[0]}")
+        checks = [c for c in available if c in asked]
+    db = options.get("--db") or manifest["defaults"]["db"]
+    if db not in manifest["databases"]:
+        raise Refused("bad_request", f"database not available for profile {profile}: {db} "
+                      f"(choose from {', '.join(sorted(manifest['databases']))})")
     tests = validate_tests(options["--tests"]) if "--tests" in options else None
     if tests and "phpunit" not in checks:
         raise Refused("bad_request", "--tests needs the phpunit check")
 
-    manifest = load_manifest(profile)
     php = options.get("--php") or manifest["defaults"]["php"]
     image = choose_image(engine, policy, profile, php, options.get("--module"))
     limits = resolve_limits(options, policy, manifest, db)

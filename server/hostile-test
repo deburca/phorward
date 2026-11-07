@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Saturation test for a phorward server: fills every run slot with hostile samples (CPU spin, memory hog,
 # fork bomb) and checks that the host stays responsive, every run ends on its own, and nothing is left behind.
-#   hostile-test --module PATH --module-name NAME [--probe CMD]... [--timeout 30] [--memory 1g]
-#                [--max-load N] [--slack-ms 250] [--runs N]
-# --module       a checkout of the module the installed image was built for (its tree is the carrier)
-# --module-name  its Drupal machine name (the installed image is chosen with --module NAME)
+#   hostile-test --module PATH [--profile drupal-module] [--module-name NAME] [--probe CMD]... [--timeout 30]
+#                [--memory 1g] [--max-load N] [--slack-ms 250] [--runs N]
+# --module       a checkout of the project the installed image was built for (its tree is the carrier)
+# --profile      the image profile (default drupal-module); its samples are in tests/fixtures/hostile/<profile>
+# --module-name  the project's short name, as build-image derives it from --module (override only if needed)
 # --probe        a shell command that must keep succeeding quickly while the samples run, e.g.
 #                'curl -fsS -o /dev/null http://127.0.0.1:8123'. Repeatable. These are the other services on the host.
 # --timeout      wall clock for each hostile run, seconds (default 30)
@@ -18,7 +19,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUN="$HERE/phorward-run"
-SAMPLES="$HERE/../tests/fixtures/hostile"
+PROFILE="drupal-module"
 MODULE="" NAME="" TIMEOUT=30 MEMORY=1g RUNS="" SLACK_MS=250
 MAX_LOAD="$(awk -v n="$(nproc)" 'BEGIN { print n / 2 }')"
 PROBES=()
@@ -26,17 +27,25 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --module) MODULE="$2"; shift 2 ;;
     --module-name) NAME="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
     --probe) PROBES+=("$2"); shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --memory) MEMORY="$2"; shift 2 ;;
     --runs) RUNS="$2"; shift 2 ;;
     --max-load) MAX_LOAD="$2"; shift 2 ;;
     --slack-ms) SLACK_MS="$2"; shift 2 ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$MODULE" ] && [ -d "$MODULE" ] && [ -n "$NAME" ] || { echo "need --module PATH and --module-name NAME" >&2; exit 2; }
+[ -n "$MODULE" ] && [ -d "$MODULE" ] || { echo "need --module PATH (a project checkout)" >&2; exit 2; }
+SAMPLES="$HERE/../tests/fixtures/hostile/$PROFILE"
+[ -d "$SAMPLES" ] || { echo "no hostile samples for profile $PROFILE (expected $SAMPLES)" >&2; exit 2; }
+[ -n "$NAME" ] || NAME="$("$HERE/build-image" --profile "$PROFILE" --module "$MODULE" --print-name)" || exit 2
+# Where the profile keeps unit-style tests (the directory of its smoke test file), and a quick database.
+TEST_DIR="$(dirname "$("$HERE/manifest-get" "$PROFILE" smoke.bad.phpunit.file)")"
+DB_ARGS=()
+[ -z "$("$HERE/manifest-get" "$PROFILE" databases.sqlite)" ] || DB_ARGS=(--db sqlite)
 [ "${#PROBES[@]}" -gt 0 ] || echo "warning: no --probe given, so host responsiveness is not measured (load only)" >&2
 
 ENGINE="${PHORWARD_ENGINE:-$(command -v podman || command -v docker)}"
@@ -105,8 +114,8 @@ for n in $(seq 1 "$RUNS"); do
   tree="$WORK/tree$n"
   mkdir -p "$tree"
   rsync -a --exclude=.git --exclude=vendor --exclude=node_modules "$MODULE/" "$tree/"
-  mkdir -p "$tree/tests/src/Unit"
-  sed "s/__NAME__/$NAME/g" "$f" > "$tree/tests/src/Unit/$base.php"
+  mkdir -p "$tree/$TEST_DIR"
+  sed "s/__NAME__/$NAME/g" "$f" > "$tree/$TEST_DIR/$base.php"
   tar -C "$tree" -cf "$WORK/run$n.tar" .
   echo "$base" > "$WORK/run$n.name"
 done
@@ -114,8 +123,9 @@ done
 START="$(date +%s)"
 for n in $(seq 1 "$RUNS"); do
   base="$(cat "$WORK/run$n.name")"
-  "$RUN" run --protocol 1 --module "$NAME" --checks phpunit --db sqlite --tests "tests/src/Unit/$base.php" \
-    --timeout "$TIMEOUT" --memory "$MEMORY" < "$WORK/run$n.tar" > "$WORK/run$n.json" 2> "$WORK/run$n.err" &
+  "$RUN" run --protocol 1 --profile "$PROFILE" --module "$NAME" --checks phpunit ${DB_ARGS[@]+"${DB_ARGS[@]}"} \
+    --tests "$TEST_DIR/$base.php" --timeout "$TIMEOUT" --memory "$MEMORY" \
+    < "$WORK/run$n.tar" > "$WORK/run$n.json" 2> "$WORK/run$n.err" &
   PIDS+=("$!")
   # Fixed order, so which samples hold the slots is not a race (slot polling is every 0.25 s).
   sleep 1.5

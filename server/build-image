@@ -1,25 +1,32 @@
 #!/usr/bin/env bash
-# Build a phorward validation image.
-#   build-image [--profile drupal-module] [--php 8.3] [--module PATH] [--name MACHINE_NAME]
-#               [--package VENDOR/NAME] [--dev-package PKG]... [--tag TAG] [--base-only]
-# Each profile (profiles/<name>/) builds in two stages. The base (PHP, Composer, lint tools, Drupal core +
-# core-dev, with-mariadb) is module-independent; the final stage adds one module's composer dependencies
-# and patches. --module is a checkout of that module: it supplies the dependencies the image bakes in;
-# the tree under test is NOT baked in. The package name is read from its composer.json and the machine
-# name from its single *.info.yml, unless --package / --name say otherwise.
-# --dev-package adds a dev dependency the module's tests need (repeatable), e.g. drupal/key.
-# --base-only builds just the base, tagged phorward-base:php<ver>, and needs no module.
+# Build a phorward validation image from a profile (profiles/<name>/: Dockerfile + manifest.json).
+#   build-image [--profile drupal-module] [--php 8.3] [--module PATH] [--name NAME] [--package VENDOR/NAME]
+#               [--dev-package PKG]... [--tag TAG] [--base-only] [--list-profiles]
+# Each profile builds in two stages. The base is project-independent (PHP, Composer, tools); the final stage
+# adds one project's dependencies. --module is a checkout of that project: it supplies what the image bakes
+# in (never the tree under test, which is supplied at run time). The package name is read from its
+# composer.json; the short name comes from where the profile's manifest says (build.name_from: the single
+# *.info.yml for drupal-module, the package name for php-library) unless --name says otherwise.
+# --dev-package adds a dev dependency the tests need (repeatable); only for profiles that allow it.
+# --base-only builds just the base, tagged phorward-base-<profile>:php<ver>, and needs no project.
+# --list-profiles prints the profiles found under profiles/ and exits; --print-name prints the short name that
+# would be used for --module and exits.
+# The container engine is PHORWARD_ENGINE, else podman or docker, whichever is installed.
 # Prints the tool versions recorded in the image (/opt/TOOL-VERSIONS) when done.
 set -euo pipefail
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PROFILES_DIR="$HERE/../profiles"
 PROFILE="drupal-module"
-PHP_VERSION="8.3"
+PHP_VERSION=""
 MODULE="${PHORWARD_MODULE_DIR:-$PWD}"
 NAME=""
 PACKAGE=""
 DEV_PACKAGES=""
 TAG=""
 BASE_ONLY=0
+LIST=0
+PRINT_NAME=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --profile) PROFILE="$2"; shift 2 ;;
@@ -30,51 +37,98 @@ while [ $# -gt 0 ]; do
     --dev-package) DEV_PACKAGES="${DEV_PACKAGES:+$DEV_PACKAGES }$2"; shift 2 ;;
     --tag) TAG="$2"; shift 2 ;;
     --base-only) BASE_ONLY=1; shift ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    --list-profiles) LIST=1; shift ;;
+    --print-name) PRINT_NAME=1; shift ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
-HERE="$(cd "$(dirname "$0")" && pwd)"
-CONTEXT="$HERE/../profiles/$PROFILE"
-[ -f "$CONTEXT/Dockerfile" ] || { echo "unknown profile: $PROFILE" >&2; exit 2; }
+# manifest <dotted.path>: one value from the profile's manifest (empty if absent).
+manifest() { "$HERE/manifest-get" "$PROFILE" "$1"; }
+
+if [ "$LIST" = 1 ]; then
+  for m in "$PROFILES_DIR"/*/manifest.json; do
+    python3 -I - "$m" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+print(m["profile"].ljust(16), m.get("description", ""))
+PY
+  done
+  exit 0
+fi
+
+ENGINE="${PHORWARD_ENGINE:-$(command -v podman || command -v docker || true)}"
+[ -n "$ENGINE" ] || { echo "neither podman nor docker is installed" >&2; exit 1; }
+CONTEXT="$PROFILES_DIR/$PROFILE"
+[ -f "$CONTEXT/Dockerfile" ] && [ -f "$CONTEXT/manifest.json" ] \
+  || { echo "unknown profile: $PROFILE (see --list-profiles)" >&2; exit 2; }
+[ -n "$PHP_VERSION" ] || PHP_VERSION="$(manifest defaults.php)"
+[ -n "$PHP_VERSION" ] || PHP_VERSION="8.3"
 
 if [ "$BASE_ONLY" = 1 ]; then
-  TAG="${TAG:-phorward-base:php${PHP_VERSION}}"
+  TAG="${TAG:-phorward-base-${PROFILE}:php${PHP_VERSION}}"
   # The Dockerfile declares a `module` build context; an empty one satisfies it for the base target.
   EMPTY="$(mktemp -d)"
   trap 'rmdir "$EMPTY"' EXIT
-  docker build --target base \
+  "$ENGINE" build --target base \
     --build-context "module=$EMPTY" \
     --build-arg "PHP_VERSION=$PHP_VERSION" \
     -t "$TAG" "$CONTEXT"
   echo "built $TAG"
-  docker run --rm --network none "$TAG" cat /opt/TOOL-VERSIONS
+  "$ENGINE" run --rm --network none "$TAG" cat /opt/TOOL-VERSIONS
   exit 0
 fi
 
-if [ -z "$PACKAGE" ]; then
+[ -d "$MODULE" ] || { echo "no such directory: $MODULE (use --module)" >&2; exit 1; }
+if [ -z "$PACKAGE" ] || [ "$(manifest build.name_from)" = composer-package ]; then
   [ -f "$MODULE/composer.json" ] || { echo "no composer.json in $MODULE (use --module or --package)" >&2; exit 1; }
-  PACKAGE="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "$MODULE/composer.json")"
+  COMPOSER_NAME="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", ""))' "$MODULE/composer.json")"
+  [ -n "$PACKAGE" ] || PACKAGE="$COMPOSER_NAME"
+  [ -n "$PACKAGE" ] || { echo "composer.json has no \"name\" (use --package)" >&2; exit 1; }
 fi
 if [ -z "$NAME" ]; then
-  shopt -s nullglob
-  infos=("$MODULE"/*.info.yml)
-  [ "${#infos[@]}" -eq 1 ] || { echo "expected exactly one *.info.yml in $MODULE (found ${#infos[@]}); use --name" >&2; exit 1; }
-  NAME="$(basename "${infos[0]}" .info.yml)"
+  case "$(manifest build.name_from)" in
+    info.yml)
+      shopt -s nullglob
+      infos=("$MODULE"/*.info.yml)
+      [ "${#infos[@]}" -eq 1 ] || { echo "expected exactly one *.info.yml in $MODULE (found ${#infos[@]}); use --name" >&2; exit 1; }
+      NAME="$(basename "${infos[0]}" .info.yml)" ;;
+    composer-package)
+      # vendor/some-name -> some_name: lowercase letters, digits and underscores, starting with a letter.
+      NAME="$(python3 -I -c '
+import re, sys
+n = re.sub(r"[^a-z0-9_]", "_", sys.argv[1].split("/")[-1].lower())
+print(n if re.match(r"[a-z]", n) else "p_" + n)' "$PACKAGE")" ;;
+    *) echo "profile $PROFILE does not say how to name a project; use --name" >&2; exit 1 ;;
+  esac
+fi
+[[ "$NAME" =~ ^[a-z][a-z0-9_]{0,60}$ ]] || { echo "name must be lowercase letters, digits and underscores: $NAME" >&2; exit 1; }
+if [ "$PRINT_NAME" = 1 ]; then echo "$NAME"; exit 0; fi
+if [ -n "$DEV_PACKAGES" ] && [ "$(manifest build.dev_packages)" != true ]; then
+  echo "profile $PROFILE does not take --dev-package (its dependencies come from the project's composer.lock)" >&2; exit 2
+fi
+if [ "$(manifest build.needs_lock)" = true ] && [ ! -f "$MODULE/composer.lock" ]; then
+  echo "profile $PROFILE installs the project's composer.lock, and $MODULE has none" >&2; exit 1
+fi
+HASH_FILE="$(manifest build.stale_hash_file)"
+LOCK_SHA=unknown
+if [ -n "$HASH_FILE" ] && [ -f "$MODULE/$HASH_FILE" ]; then
+  LOCK_SHA="$(python3 -I -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$MODULE/$HASH_FILE")"
 fi
 REV="$(git -C "$MODULE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 TAG="${TAG:-phorward:${NAME}-php${PHP_VERSION}-$(date +%Y%m%d)}"
 
-docker build --target final \
-  --build-context "module=$MODULE" \
-  --build-arg "PHP_VERSION=$PHP_VERSION" \
-  --build-arg "MODULE_PACKAGE=$PACKAGE" \
-  --build-arg "MODULE_NAME=$NAME" \
-  --build-arg "DEV_PACKAGES=$DEV_PACKAGES" \
-  --build-arg "MODULE_REV=$REV" \
-  -t "$TAG" -t "phorward:${NAME}-php${PHP_VERSION}" \
-  "$CONTEXT"
+args=(--target final
+  --build-context "module=$MODULE"
+  --build-arg "PHP_VERSION=$PHP_VERSION"
+  --build-arg "PROJECT_PACKAGE=$PACKAGE"
+  --build-arg "PROJECT_NAME=$NAME"
+  --build-arg "PROJECT_REV=$REV"
+  --build-arg "LOCK_SHA256=$LOCK_SHA"
+  -t "$TAG" -t "phorward:${NAME}-php${PHP_VERSION}")
+[ -z "$DEV_PACKAGES" ] || args+=(--build-arg "DEV_PACKAGES=$DEV_PACKAGES")
+"$ENGINE" build "${args[@]}" "$CONTEXT"
 
 echo "built $TAG"
-docker run --rm --network none "$TAG" cat /opt/TOOL-VERSIONS
+"$ENGINE" run --rm --network none "$TAG" cat /opt/TOOL-VERSIONS

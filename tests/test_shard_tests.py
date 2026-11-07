@@ -19,7 +19,7 @@ def php_test(methods: int, extra: str = "") -> str:
     return TEST_CLASS.format(name="T", methods=extra + body)
 
 
-class ShardTestsCase(unittest.TestCase):
+class TreeHelpers(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -31,6 +31,14 @@ class ShardTestsCase(unittest.TestCase):
         path.write_text(text)
         return path
 
+    def run_main(self, *args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            shard_tests.main(["shard-tests.py", *args])
+        return out.getvalue()
+
+
+class ShardTestsCase(TreeHelpers):
     def build_tree(self) -> list[Path]:
         """A module with Kernel and Unit tests, plus a submodule's tests, of uneven sizes."""
         made = []
@@ -41,12 +49,6 @@ class ShardTestsCase(unittest.TestCase):
         made.append(self.write("modules/sub/tests/src/Kernel/SubTest.php", php_test(4)))
         made.append(self.write("modules/sub/tests/src/Unit/Nested/DeepTest.php", php_test(2)))
         return sorted(made)
-
-    def run_main(self, *args):
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            shard_tests.main(["shard-tests.py", *args])
-        return out.getvalue()
 
     def test_finds_kernel_and_unit_tests_of_module_and_submodules(self):
         expected = self.build_tree()
@@ -133,6 +135,50 @@ class ShardTestsCase(unittest.TestCase):
         self.addCleanup(lambda: (shard_tests.TIMES.clear(), shard_tests.TIMES.update(original)))
         shard_tests.TIMES["tests/src/Kernel/ATest.php"] = 42.0
         self.assertEqual(shard_tests.cost(path, self.root), 42.0)
+
+
+class FlatLayoutCase(TreeHelpers):
+    """The `flat` layout, for plain PHP libraries: every `tests` directory counts, at any depth below it."""
+
+    def flat_tree(self):
+        made = []
+        for i in range(1, 6):
+            made.append(self.write(f"tests/Thing{i}Test.php", php_test(i)))
+        made.append(self.write("tests/Sub/Deep/OtherTest.php", php_test(2)))
+        made.append(self.write("packages/a/tests/ATest.php", php_test(1)))
+        return sorted(made)
+
+    def test_finds_every_tests_directory(self):
+        expected = self.flat_tree()
+        self.assertEqual(sorted(shard_tests.all_tests(self.root, "flat")), expected)
+
+    def test_drupal_layout_ignores_a_flat_tree(self):
+        self.flat_tree()
+        self.assertEqual(shard_tests.all_tests(self.root, "drupal"), [])
+
+    def test_each_file_lands_in_exactly_one_shard(self):
+        expected = self.flat_tree()
+        files = shard_tests.all_tests(self.root, "flat")
+        for count in range(1, 9):
+            with self.subTest(shards=count):
+                dealt = [p for b in shard_tests.shards(files, count, self.root) for p in b[2]]
+                self.assertEqual(sorted(dealt), expected)
+
+    def test_vendor_and_stray_files(self):
+        self.write("vendor/x/tests/XTest.php", php_test(1))
+        self.write("tests/OneTest.php", php_test(1))
+        self.assertEqual([p.name for p in shard_tests.all_tests(self.root, "flat")], ["OneTest.php"])
+        self.write("tests/Misnamed.php", php_test(1))
+        with self.assertRaises(SystemExit):
+            shard_tests.all_tests(self.root, "flat")
+
+    def test_command_line_layout_option(self):
+        self.flat_tree()
+        self.assertIn("ok: 7 test files", self.run_main(str(self.root), "--check", "--layout", "flat"))
+        printed = self.run_main(str(self.root), "1/1", "--layout", "flat").split()
+        self.assertEqual(len(printed), 7)
+        with self.assertRaises(SystemExit):
+            self.run_main(str(self.root), "1/1", "--layout", "nope")
 
 
 if __name__ == "__main__":
