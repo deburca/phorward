@@ -370,6 +370,31 @@ class BuildImageTests(unittest.TestCase):
                 self.assertEqual(rc, 0, err)
                 self.assertEqual([c for c in calls if c[0] == "pull"], [], f"{directory.name} {version} is pinned")
 
+    def test_print_name_needs_no_container_engine(self):
+        """A machine without docker or podman can still ask what a project would be called."""
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            bin_dir = tmp / "bin"
+            bin_dir.mkdir()
+            for tool in ("env", "bash", "dirname", "basename", "python3"):
+                found = shutil.which(tool)
+                self.assertIsNotNone(found, tool)
+                (bin_dir / tool).symlink_to(found)
+            project = tmp / "project"
+            project.mkdir()
+            (project / "composer.json").write_text(json.dumps({"name": "Acme/My-Lib"}))
+            (project / "composer.lock").write_text("{}")
+            done = subprocess.run([str(BUILD), "--profile", "php-library", "--module", str(project), "--print-name"],
+                                  capture_output=True, text=True, env={"PATH": str(bin_dir)})
+            self.assertEqual((done.returncode, done.stdout.strip()), (0, "my_lib"), done.stderr)
+            self.assertNotIn("neither podman nor docker", done.stderr)
+            # Anything that does need an engine still says so.
+            done = subprocess.run([str(BUILD), "--profile", "php-library", "--module", str(project)],
+                                  capture_output=True, text=True, env={"PATH": str(bin_dir)})
+            self.assertEqual(done.returncode, 1)
+            self.assertIn("neither podman nor docker is installed", done.stderr)
+
     def test_base_only_needs_no_project(self):
         rc, out, err, calls = run_build("--profile", "php-library", "--base-only")
         self.assertEqual(rc, 0, err)

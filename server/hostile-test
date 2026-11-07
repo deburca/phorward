@@ -38,7 +38,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$MODULE" ] && [ -d "$MODULE" ] || { echo "need --module PATH (a project checkout)" >&2; exit 2; }
+if [ -z "$MODULE" ] || [ ! -d "$MODULE" ]; then echo "need --module PATH (a project checkout)" >&2; exit 2; fi
 SAMPLES="$HERE/../tests/fixtures/hostile/$PROFILE"
 [ -d "$SAMPLES" ] || { echo "no hostile samples for profile $PROFILE (expected $SAMPLES)" >&2; exit 2; }
 [ -n "$NAME" ] || NAME="$("$HERE/build-image" --profile "$PROFILE" --module "$MODULE" --print-name)" || exit 2

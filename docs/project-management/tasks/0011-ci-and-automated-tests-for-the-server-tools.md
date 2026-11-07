@@ -31,6 +31,9 @@ New in this repo. The scripts in `server/` and `profiles/` have been verified by
 
 ## Pending updates
 - README has a plain Tests section; add a badge once the remote exists.
+- **First CI run on GitHub, found 2026-11-07.** The repository is `deburca/phordward` (public; note the spelling), `main` at the "harness build and templates" commit. One workflow run, on that push, passed (the `static` job: composer validate, php -l, shellcheck, python syntax, the Python unit tests, shard checks). It covered the Python side as it stood after task 0003; the PHP client (tasks 0008, 0004) and tasks 0005 to 0010 had not run on GitHub. The `Image smoke test` workflow is scheduled (Mondays 04:17 UTC) and manual; it has not run.
+- **Linux dry run of the whole CI job before pushing the rest**, in a throwaway Debian container with a non-root user, Python 3.13 and ShellCheck 0.10, with every step of `ci.yml`. It found four problems that passing on the Mac had hidden, all fixed on `feature/0011-linux-ci-portability`: ShellCheck 0.10 (and the older one on GitHub's Ubuntu) flags `A && B || C` (SC2015) and functions called indirectly (SC2317) in `build-image`, `smoke-test`, `parity-check` and `hostile-test`, which the Homebrew ShellCheck on the Mac does not; `build-image --print-name` demanded a container engine though it only reads files; a Python test closed `stdin` and then called `communicate()`, which raises on Python 3.13; and the name-derivation snippet, once indented inside a function, raised `IndentationError` on Python 3.13 (Python 3.15 dedents `-c` code, so it passed locally). After the fixes every step passes there: 310 PHP tests (none skipped) and 112 Python tests.
+- Lesson kept: run the CI steps on the oldest Python and ShellCheck CI will use, not only on the development machine.
 
 ## Related
 - Project:: [[first-public-release]]

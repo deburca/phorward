@@ -62,6 +62,32 @@ done
 # manifest <dotted.path>: one value from the profile's manifest (empty if absent).
 manifest() { PHORWARD_PROFILES_DIR="$PROFILES_DIR" "$HERE/manifest-get" "$PROFILE" "$@"; }
 
+# Works out PACKAGE and NAME for --module from the profile manifest and the project's files; needs no engine.
+derive_project() {
+  [ -d "$MODULE" ] || { echo "no such directory: $MODULE (use --module)" >&2; exit 1; }
+  if [ -z "$PACKAGE" ] || [ "$(manifest build.name_from)" = composer-package ]; then
+    [ -f "$MODULE/composer.json" ] || { echo "no composer.json in $MODULE (use --module or --package)" >&2; exit 1; }
+    COMPOSER_NAME="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", ""))' "$MODULE/composer.json")"
+    [ -n "$PACKAGE" ] || PACKAGE="$COMPOSER_NAME"
+    [ -n "$PACKAGE" ] || { echo "composer.json has no \"name\" (use --package)" >&2; exit 1; }
+  fi
+  if [ -z "$NAME" ]; then
+    case "$(manifest build.name_from)" in
+      info.yml)
+        shopt -s nullglob
+        infos=("$MODULE"/*.info.yml)
+        [ "${#infos[@]}" -eq 1 ] || { echo "expected exactly one *.info.yml in $MODULE (found ${#infos[@]}); use --name" >&2; exit 1; }
+        NAME="$(basename "${infos[0]}" .info.yml)" ;;
+      composer-package)
+        # vendor/some-name -> some_name: lowercase letters, digits and underscores, starting with a letter.
+        NAME="$(python3 -I -c 'import re,sys; n = re.sub(r"[^a-z0-9_]", "_", sys.argv[1].split("/")[-1].lower()); print(n if re.match(r"[a-z]", n) else "p_" + n)' "$PACKAGE")" ;;
+      *) echo "profile $PROFILE does not say how to name a project; use --name" >&2; exit 1 ;;
+    esac
+  fi
+  [[ "$NAME" =~ ^[a-z][a-z0-9_]{0,60}$ ]] || { echo "name must be lowercase letters, digits and underscores: $NAME" >&2; exit 1; }
+  if [ "$PRINT_NAME" = 1 ]; then echo "$NAME"; exit 0; fi
+}
+
 if [ "$LIST" = 1 ]; then
   for m in "$PROFILES_DIR"/*/manifest.json; do
     python3 -I - "$m" <<'PY'
@@ -74,12 +100,15 @@ PY
 fi
 
 ENGINE="${PHORWARD_ENGINE:-$(command -v podman || command -v docker || true)}"
-[ -n "$ENGINE" ] || { echo "neither podman nor docker is installed" >&2; exit 1; }
 CONTEXT="$PROFILES_DIR/$PROFILE"
-[ -f "$CONTEXT/Dockerfile" ] && [ -f "$CONTEXT/manifest.json" ] \
-  || { echo "unknown profile: $PROFILE (see --list-profiles)" >&2; exit 2; }
+if [ ! -f "$CONTEXT/Dockerfile" ] || [ ! -f "$CONTEXT/manifest.json" ]; then
+  echo "unknown profile: $PROFILE (see --list-profiles)" >&2; exit 2
+fi
 [ -n "$PHP_VERSION" ] || PHP_VERSION="$(manifest defaults.php)"
 [ -n "$PHP_VERSION" ] || PHP_VERSION="8.3"
+# --print-name only reads files, so it runs before an engine is required.
+if [ "$PRINT_NAME" = 1 ]; then derive_project; fi
+[ -n "$ENGINE" ] || { echo "neither podman nor docker is installed" >&2; exit 1; }
 
 EMPTY=""
 trap 'if [ -n "$EMPTY" ]; then rmdir "$EMPTY" 2>/dev/null || true; fi' EXIT
@@ -174,31 +203,7 @@ if [ "$BASE_ONLY" = 1 ]; then
   exit 0
 fi
 
-[ -d "$MODULE" ] || { echo "no such directory: $MODULE (use --module)" >&2; exit 1; }
-if [ -z "$PACKAGE" ] || [ "$(manifest build.name_from)" = composer-package ]; then
-  [ -f "$MODULE/composer.json" ] || { echo "no composer.json in $MODULE (use --module or --package)" >&2; exit 1; }
-  COMPOSER_NAME="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", ""))' "$MODULE/composer.json")"
-  [ -n "$PACKAGE" ] || PACKAGE="$COMPOSER_NAME"
-  [ -n "$PACKAGE" ] || { echo "composer.json has no \"name\" (use --package)" >&2; exit 1; }
-fi
-if [ -z "$NAME" ]; then
-  case "$(manifest build.name_from)" in
-    info.yml)
-      shopt -s nullglob
-      infos=("$MODULE"/*.info.yml)
-      [ "${#infos[@]}" -eq 1 ] || { echo "expected exactly one *.info.yml in $MODULE (found ${#infos[@]}); use --name" >&2; exit 1; }
-      NAME="$(basename "${infos[0]}" .info.yml)" ;;
-    composer-package)
-      # vendor/some-name -> some_name: lowercase letters, digits and underscores, starting with a letter.
-      NAME="$(python3 -I -c '
-import re, sys
-n = re.sub(r"[^a-z0-9_]", "_", sys.argv[1].split("/")[-1].lower())
-print(n if re.match(r"[a-z]", n) else "p_" + n)' "$PACKAGE")" ;;
-    *) echo "profile $PROFILE does not say how to name a project; use --name" >&2; exit 1 ;;
-  esac
-fi
-[[ "$NAME" =~ ^[a-z][a-z0-9_]{0,60}$ ]] || { echo "name must be lowercase letters, digits and underscores: $NAME" >&2; exit 1; }
-if [ "$PRINT_NAME" = 1 ]; then echo "$NAME"; exit 0; fi
+derive_project
 if [ -n "$DEV_PACKAGES" ] && [ "$(manifest build.dev_packages)" != true ]; then
   echo "profile $PROFILE does not take --dev-package (its dependencies come from the project's composer.lock)" >&2; exit 2
 fi

@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$MODULE" ] && [ -d "$MODULE" ] || { echo "need --module PATH (a project checkout)" >&2; exit 2; }
+if [ -z "$MODULE" ] || [ ! -d "$MODULE" ]; then echo "need --module PATH (a project checkout)" >&2; exit 2; fi
 ENGINE="${PHORWARD_ENGINE:-$(command -v podman || command -v docker || true)}"
 [ -n "$ENGINE" ] || { echo "neither podman nor docker is installed" >&2; exit 2; }
 manifest() { "$HERE/manifest-get" "$PROFILE" "$@"; }
@@ -37,8 +37,9 @@ IMAGE="phorward:${NAME}-php${PHP}"
 "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image not found: $IMAGE" >&2; exit 2; }
 label() { "$ENGINE" image inspect -f "{{index .Config.Labels \"$1\"}}" "$IMAGE"; }
 M="$(label phorward.module-path)"
-[ "$(label phorward.profile)" = "$PROFILE" ] && [ -n "$M" ] \
-  || { echo "image $IMAGE is not a $PROFILE image (labels phorward.profile / phorward.module-path)" >&2; exit 2; }
+if [ "$(label phorward.profile)" != "$PROFILE" ] || [ -z "$M" ]; then
+  echo "image $IMAGE is not a $PROFILE image (labels phorward.profile / phorward.module-path)" >&2; exit 2
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK:?}"' EXIT
@@ -110,7 +111,7 @@ except Exception:
 TMPFS=()
 while IFS= read -r spec; do [ -z "$spec" ] || TMPFS+=(--tmpfs "$spec"); done < <(manifest tmpfs --lines)
 
-# shellcheck disable=SC2329  # invoked indirectly through expect
+# shellcheck disable=SC2317,SC2329  # invoked indirectly through expect (the code is the older and newer name of this note)
 sandbox() {   # sandbox <dir> <cmd...>: the limits every validation run gets, for checks of the sandbox itself
   local dir="$1"; shift
   "$ENGINE" run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \

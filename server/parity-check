@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$MODULE" ] && [ -d "$MODULE" ] || { echo "need --module PATH (a module checkout)" >&2; exit 2; }
+if [ -z "$MODULE" ] || [ ! -d "$MODULE" ]; then echo "need --module PATH (a module checkout)" >&2; exit 2; fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="${PHORWARD_ENGINE:-$(command -v podman || command -v docker || true)}"
 [ -n "$ENGINE" ] || { echo "neither podman nor docker is installed" >&2; exit 2; }
@@ -39,7 +39,7 @@ fi
 "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image not found: $IMAGE" >&2; exit 2; }
 M="$("$ENGINE" image inspect -f '{{index .Config.Labels "phorward.module-path"}}' "$IMAGE")"
 NAME="$("$ENGINE" image inspect -f '{{index .Config.Labels "phorward.module-name"}}' "$IMAGE")"
-[ -n "$M" ] && [ -n "$NAME" ] || { echo "image $IMAGE has no phorward.module-* labels; not a phorward image" >&2; exit 2; }
+if [ -z "$M" ] || [ -z "$NAME" ]; then echo "image $IMAGE has no phorward.module-* labels; not a phorward image" >&2; exit 2; fi
 # The comparison runs Drupal's own phpunit configuration against Drupal databases; other profiles have none.
 [ "$("$ENGINE" image inspect -f '{{index .Config.Labels "phorward.profile"}}' "$IMAGE")" = drupal-module ] \
   || { echo "parity-check compares databases for Drupal Kernel tests and only supports the drupal-module profile" >&2; exit 2; }
@@ -50,7 +50,7 @@ SRC="$OUT/module"
 mkdir -p "$SRC"
 rsync -a --exclude=.git --exclude=vendor --exclude=node_modules "$MODULE/" "$SRC/"
 
-# shellcheck disable=SC2329  # invoked through the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked through the EXIT trap (the code is the older and newer name of this note)
 cleanup() { "$ENGINE" rm -f "$DB" >/dev/null 2>&1; "$ENGINE" network rm "$NET" >/dev/null 2>&1; }
 trap cleanup EXIT
 

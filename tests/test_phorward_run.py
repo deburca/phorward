@@ -269,6 +269,7 @@ class RunTests(WrapperCase):
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         proc.stdin.write(make_tar())
         proc.stdin.close()
+        proc.stdin = None   # communicate() on Python 3.13 raises if it is handed a stdin it finds closed
         deadline = time.monotonic() + 20
         while not list((self.base / "state" / "containers").glob("*.json")):
             self.assertLess(time.monotonic(), deadline, "container never started")
