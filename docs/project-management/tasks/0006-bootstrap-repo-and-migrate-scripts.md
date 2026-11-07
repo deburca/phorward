@@ -1,7 +1,7 @@
 ---
 type: task
 tags: [phorward/task]
-status: in-progress        # backlog | todo | in-progress | review | done | blocked | dropped
+status: done               # backlog | todo | in-progress | review | done | blocked | dropped
 priority: high       # high | medium | low
 project: "[[first-public-release]]"
 area: repo
@@ -22,9 +22,9 @@ Origin: domus task 0149. [[0002-generic-configurable-packagist-tool]] moved the 
 - [x] Scripts migrated and de-specialised: module path, name and package come from `--module`, `composer.json`, `*.info.yml` and image labels; sharding script ported to `server/shard-tests.py`; `--dev-package` replaces hardcoded extras
 - [x] Verified from this repo on the first server: `build-image`, `smoke-test` 11/11, `parity-check --phases mariadb` 1444/1444
 - [x] Project-management vault for this repo, with the migrated ADRs and tasks; `CLAUDE.md` for a fresh session
-- [ ] A remote is configured (GitHub), default branch `main`, and the repository name is settled (not yet created or pushed; publishing anything needs explicit approval)
-- [ ] CI for phorward itself exists: see [[0011-ci-and-automated-tests-for-the-server-tools]]
-- [ ] Branch-per-task workflow adopted (`feature/NNNN-slug`, flip `status: done` in the commit that lands the work); all work so far is directly on `main`
+- [x] A remote is configured (GitHub), default branch `main`, and the repository name is settled (2026-11-07: `github.com/deburca/phorward`, public; it was first created as `phordward`, a typo, and renamed by the owner before the first full push, `792cb9b..fb87166`)
+- [x] CI for phorward itself exists: see [[0011-ci-and-automated-tests-for-the-server-tools]] (green on GitHub on 2026-11-07)
+- [x] Branch-per-task workflow adopted (`feature/NNNN-slug`; `main` is fast-forwarded to a finished branch; small corrections to notes have been committed straight to `main`); every task from 0002 onward was done on its own branch
 
 ## Implementation notes
 - Names fixed by [[0002-generic-configurable-packagist-tool]]: client `bin/phorward`, server wrapper `phorward-run`, project file `phorward.json`, user file `~/.config/phorward/config.json`, env prefix `PHORWARD_`, policy `/etc/phorward/policy.json`.

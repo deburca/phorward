@@ -77,8 +77,8 @@ shellcheck server/build-image server/smoke-test server/parity-check server/hosti
 ```
 
 GitHub Actions (`.github/workflows/`) runs these and `composer validate` on every push. A heavier workflow
-builds the image from the fixture module in `tests/fixtures/smoke_module` and smoke-tests it weekly and on
-demand, on x86_64 and arm64. Neither workflow has run yet, because the repository has no remote.
+builds the images of both profiles from the fixtures in `tests/fixtures/` and smoke-tests them, weekly and on
+demand, on x86_64 and arm64.
 
 ## Licence
 
