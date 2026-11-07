@@ -33,7 +33,7 @@ Origin: domus task 0151. [[0002-generic-configurable-packagist-tool]] makes the 
 - Design agreed 2026-11-07 (`docs/configuration.md`): no CLI framework (hand-written dispatcher plus `symfony/process`), the project/user scope split enforced, `server:install` as a plan by default with `--apply` using `sudo -n`, key names as tabled.
 - Done so far: `src/Config/` (schema, layered loader, project detection), `src/Cli/`, `phorward config`, `phorward doctor` with `src/Ssh/` (the transport, `symfony/process`), `src/Server/Protocol`, `src/Archive/TarWriter`; 144 PHPUnit tests passing on PHP 8.5 and 8.3.36 (the latter in the `php-library` image on the first server, `--network none`), including an end-to-end test where a stand-in `ssh` drives the real `phorward-run` with the fake engine. Next: `server:install`, then the end-to-end verification on two hosts (the second host is not yet available).
 - Found while testing doctor: `sshd` refuses a key file under `/tmp` while `StrictModes` is on (the sticky `/tmp` parent), which doctor reported correctly as `Permission denied (publickey)`; the guide's file-mode advice already covers it.
-- Left on the first server for the owner to delete: `/tmp/phorward-doctor.kIrLBS` (a throwaway host key, a throwaway client key, a policy and an `sshd_config`; its `sshd` is stopped) and `~/phorward-client-test` (a scratch copy used to run the PHP tests on 8.3).
+- The scratch files left on the first server by the doctor verification (`/tmp/phorward-doctor.kIrLBS`, `~/phorward-client-test`) were deleted on 2026-11-07 with the owner's approval; `~/phorward-build`, `~/phorward-parity` and `~/validate-build` were left alone.
 
 ## Related
 - Project:: [[first-public-release]]
