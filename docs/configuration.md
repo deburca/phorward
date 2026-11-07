@@ -1,7 +1,7 @@
 # Configuration, `doctor` and `server:install`
 
 **Status: agreed 2026-11-07.** The key names below are a compatibility promise from 0.1.0, so they are settled
-here and written down once. Implemented: the loader and `phorward config`. Still to build: `doctor` and
+here and written down once. Implemented: the loader, `phorward config` and `phorward doctor`. Still to build:
 `server:install`.
 
 ## The model
@@ -106,7 +106,10 @@ check fails.
 
 ## `phorward doctor`
 
-Each check prints `ok` or `FAIL` with a hint that says what to do:
+Each check prints `ok`, `WARN` or `FAIL`, and every `WARN` and `FAIL` has a `fix:` line saying what to do. Warnings
+(a rootful engine, a stale image, a heavy policy, little disk) do not change the exit status; a `FAIL` makes it `1`.
+Checks that cannot run because an earlier one failed are not reported. `--output json` prints the same as data.
+It changes nothing on the server: the only thing it runs there is a lint of a one-line file it sends itself.
 
 | Check | How |
 |---|---|

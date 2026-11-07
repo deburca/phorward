@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Phorward\Tests;
 
+use PHPUnit\Framework\Attributes\After;
+use PHPUnit\Framework\Attributes\Before;
+
 /**
  * A scratch directory per test, removed afterwards.
  */
@@ -11,15 +14,15 @@ trait TempDirTrait {
 
   private string $tmp;
 
-  protected function setUp(): void {
-    parent::setUp();
+  #[Before]
+  protected function createTempDir(): void {
     $this->tmp = realpath(sys_get_temp_dir()) . '/phorward-test-' . bin2hex(random_bytes(6));
     mkdir($this->tmp, 0777, TRUE);
   }
 
-  protected function tearDown(): void {
+  #[After]
+  protected function removeTempDir(): void {
     $this->remove($this->tmp);
-    parent::tearDown();
   }
 
   protected function write(string $relative, string $content): string {

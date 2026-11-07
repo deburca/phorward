@@ -206,8 +206,8 @@ report the connection failure rather than a code failure. The values 70 and 75 a
   "engine": {"name": "podman", "version": "5.7.0", "rootless": true},
   "policy": {"max_memory": "6g", "max_cpus": 2, "max_pids": 1024, "max_timeout": 900, "slots": 2},
   "images": [{"profile": "drupal-module", "php": "8.3", "tag": "phorward:mymodule-php8.3",
-              "module_name": "mymodule", "built": "2026-11-05"}],
-  "host": {"cpus": 16, "memory_bytes": 98784247808, "load_1m": 0.3}
+              "module_name": "mymodule", "lock_sha256": "3b1f…", "built": "2026-11-05"}],
+  "host": {"cpus": 16, "memory_bytes": 98784247808, "load_1m": 0.3, "disk_free_bytes": 812345678901}
 }
 ```
 
@@ -216,6 +216,11 @@ when the policy looks safe) is the server's own comparison of the policy with `h
 `memory_heavy`, `cpu_exceeds_host`, `cpu_heavy`, `no_priority` and `tmpfs_heavy`. `phorward doctor` prints them
 ([task 0005]); clients ignore codes they do not know. `info` takes no stdin and starts no
 container.
+
+`lock_sha256` is the hash recorded in the image's `phorward.lock-sha256` label (empty for an image built before the
+label existed), which a client compares with the hash of the project's dependency file to see that an image is
+stale. `host.disk_free_bytes` is the free space on the filesystem holding the results directory. Both were added
+without a version bump; a client must treat them as optional when talking to an older server.
 
 [task 0005]: project-management/tasks/0005-server-policy-resource-limits-and-concurrency.md
 

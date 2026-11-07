@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace Phorward\Cli;
 
 use Phorward\Command\ConfigCommand;
+use Phorward\Command\DoctorCommand;
 use Phorward\Config\ConfigException;
 use Phorward\Config\ConfigLoader;
 use Phorward\Config\Schema;
+use Phorward\Project\ProfileCatalog;
+use Phorward\Ssh\SshTransport;
 
 /**
  * Finds the command in the arguments and runs it. Exit codes match phorward-run's: 0 passed, 1 a check
@@ -23,9 +26,26 @@ final class Application {
   public const EXIT_INFRASTRUCTURE = 70;
   public const EXIT_BUSY = 75;
 
-  private const COMMANDS = ['config' => 'Print the resolved configuration and where each value came from'];
+  private const COMMANDS = [
+    'config' => 'Print the resolved configuration and where each value came from',
+    'doctor' => 'Check the connection, the server and the image, and say how to fix what is wrong',
+  ];
 
-  public function __construct(private readonly Schema $schema, private readonly Output $output) {}
+  /** @var \Closure(string, int): \Phorward\Ssh\Transport */
+  private readonly \Closure $transportFactory;
+
+  /**
+   * @param \Closure(string, int): \Phorward\Ssh\Transport|NULL $transportFactory Makes the transport for a host and
+   *   connect timeout; ssh unless a test supplies another.
+   */
+  public function __construct(
+    private readonly Schema $schema,
+    private readonly Output $output,
+    ?\Closure $transportFactory = NULL,
+    private readonly ?ProfileCatalog $catalog = NULL,
+  ) {
+    $this->transportFactory = $transportFactory ?? static fn(string $host, int $timeout) => new SshTransport($host, $timeout);
+  }
 
   /**
    * @param string[] $argv The arguments, without the program name.
@@ -51,6 +71,16 @@ final class Application {
         }
         $command = new ConfigCommand($this->schema, new ConfigLoader($this->schema), $this->output);
         return $command->run($parsed['positional'], $parsed['options'], $env, $cwd);
+      }
+      if ($command === 'doctor') {
+        $parsed = ArgParser::parse($rest, ['help']);
+        if (isset($parsed['options']['help'])) {
+          $this->help();
+          return self::EXIT_OK;
+        }
+        $doctor = new DoctorCommand(new ConfigLoader($this->schema), $this->transportFactory,
+          $this->catalog ?? ProfileCatalog::bundled(), $this->output);
+        return $doctor->run($parsed['positional'], $parsed['options'], $env, $cwd);
       }
       $this->output->error("Unknown command \"$command\". Run \"phorward help\".");
       return self::EXIT_USAGE;

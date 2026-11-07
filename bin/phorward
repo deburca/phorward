@@ -4,7 +4,7 @@
 /**
  * phorward command line entry point.
  *
- * Implemented so far: help, version and config. The run, doctor and server:install commands arrive with the
+ * Implemented so far: help, version, config and doctor. The run and server:install commands arrive with the
  * rest of the client work; until then the server-side tools in server/ are used directly.
  */
 

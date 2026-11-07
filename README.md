@@ -32,7 +32,8 @@ under test is mounted read-only at run time and never baked in.
 
 `bin/phorward` is being built. So far `phorward config` prints the resolved configuration and where each value
 came from; the settings, their scopes and the layering rules are in [docs/configuration.md](docs/configuration.md).
-`run`, `doctor` and `server:install` follow.
+`phorward doctor` checks the connection, the server and the image end to end and says how to fix what it finds.
+`run` and `server:install` follow.
 
 ## Try the server tools
 

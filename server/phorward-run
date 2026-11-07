@@ -298,6 +298,7 @@ def list_images(engine):
         images.append({"profile": labels["phorward.profile"], "php": m.group(2), "tag": tag,
                        "module_name": labels.get("phorward.module-name", m.group(1)),
                        "module_path": labels.get("phorward.module-path", ""),
+                       "lock_sha256": labels.get("phorward.lock-sha256", ""),
                        "built": created[:10]})
     return images
 
@@ -757,6 +758,17 @@ def do_run(options, policy):
     return result
 
 
+def free_bytes(path):
+    """Free space on the filesystem that holds `path` (or its nearest existing parent); 0 if it cannot be read."""
+    probe = Path(path)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return shutil.disk_usage(probe).free
+    except OSError:
+        return 0
+
+
 def gib(nbytes):
     return f"{nbytes / 1024 ** 3:.0f}g"
 
@@ -806,7 +818,8 @@ def do_info(policy):
         mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     except (ValueError, OSError):
         mem = 0
-    host = {"cpus": os.cpu_count() or 0, "memory_bytes": mem, "load_1m": round(os.getloadavg()[0], 2)}
+    host = {"cpus": os.cpu_count() or 0, "memory_bytes": mem, "load_1m": round(os.getloadavg()[0], 2),
+            "disk_free_bytes": free_bytes(policy["results_dir"])}
     return {
         "protocol": PROTOCOL, "kit_version": KIT_VERSION,
         "engine": {"name": name, "version": version.group(1) if version else "unknown",
@@ -814,7 +827,7 @@ def do_info(policy):
         "policy": {k: policy[k] for k in ("max_memory", "max_cpus", "max_pids", "max_timeout", "slots",
                                           "allowed_profiles", "allowed_php", "results_keep",
                                           "results_max_age_days")},
-        "images": [{k: i[k] for k in ("profile", "php", "tag", "module_name", "built")}
+        "images": [{k: i[k] for k in ("profile", "php", "tag", "module_name", "lock_sha256", "built")}
                    for i in list_images(engine)],
         "host": host,
         "warnings": policy_warnings(policy, host),

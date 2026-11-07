@@ -40,6 +40,8 @@ elif cmd == "image" and args[1] == "inspect":
     tag = args[-1]
     labels = {"phorward.profile": os.environ.get("FAKE_PROFILE", "drupal-module"), "phorward.module-name": "smoke",
               "phorward.module-path": MODULE_PATH}
+    if os.environ.get("FAKE_LOCK"):
+        labels["phorward.lock-sha256"] = os.environ["FAKE_LOCK"]
     print(json.dumps(labels) + "|2026-11-05T12:00:00Z")
 elif cmd == "run":
     if args[-3:] == ["cat", "/opt/TOOL-VERSIONS"] or args[-2:] == ["cat", "/opt/TOOL-VERSIONS"]:

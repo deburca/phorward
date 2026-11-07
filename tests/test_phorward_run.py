@@ -575,9 +575,18 @@ class InfoTests(WrapperCase):
         self.assertEqual(info["policy"]["slots"], 2)
         self.assertEqual(info["images"], [{"profile": "drupal-module", "php": "8.3",
                                            "tag": "phorward:smoke-php8.3", "module_name": "smoke",
-                                           "built": "2026-11-05"}])
+                                           "lock_sha256": "", "built": "2026-11-05"}])
         self.assertGreater(info["host"]["cpus"], 0)
         self.assertEqual(self.container_runs(), [])
+
+    def test_info_reports_image_lock_hash_and_free_disk(self):
+        env = self.env(FAKE_LOCK="a1b2c3")
+        rc, info, _ = self.run_wrapper("info --protocol 1", b"", env=env)
+        self.assertEqual(info["images"][0]["lock_sha256"], "a1b2c3")
+        self.assertIsInstance(info["host"]["disk_free_bytes"], int)
+        self.assertGreater(info["host"]["disk_free_bytes"], 0)
+        rc, info, _ = self.run_wrapper("info --protocol 1", b"")
+        self.assertEqual(info["images"][0]["lock_sha256"], "", "an image without the label reports an empty hash")
 
     def test_info_protocol_mismatch(self):
         rc, result, _ = self.run_wrapper("info --protocol 9", b"")
