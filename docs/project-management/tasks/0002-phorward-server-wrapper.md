@@ -1,7 +1,7 @@
 ---
 type: task
 tags: [phorward/task]
-status: backlog        # backlog | todo | in-progress | review | done | blocked | dropped
+status: in-progress        # backlog | todo | in-progress | review | done | blocked | dropped
 priority: medium       # high | medium | low
 project: "[[first-public-release]]"
 area: server
@@ -37,6 +37,7 @@ Origin: domus task 0145. The wrapper is part of the server kit and is the single
 - Installed copy versus repo: `phorward server:install` ([[0008-config-loader-doctor-and-server-install]]) places the files; never copy by hand.
 
 ## Pending updates
+- `docs/protocol.md` is agreed (2026-11-07); the review decisions are listed at its end. Next: write `phorward-run` against it
 - Needs the exact flag set and timeouts from [[0005-server-policy-resource-limits-and-concurrency]]
 - Podman has never been run with these scripts (only Docker): verify in [[0011-ci-and-automated-tests-for-the-server-tools]]
 
