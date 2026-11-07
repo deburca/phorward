@@ -4,8 +4,8 @@
 /**
  * phorward command line entry point.
  *
- * Implemented so far: help, version, config, doctor and server:install. The run command arrives with the
- * rest of the client work; until then the server-side tools in server/ are used directly.
+ * Commands: help, version, config, doctor, server:install and run. The server-side tools in server/ can also be
+ * used directly.
  */
 
 declare(strict_types=1);

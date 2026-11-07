@@ -97,7 +97,8 @@ and scope, so there is one place that knows the whole set.
 | `phorward config` | Print the resolved configuration and its sources |
 | `phorward doctor` | Check the connection and the server end to end (below) |
 | `phorward server:install <admin-host>` | Install or update the server side (below) |
-| `phorward run`, later `phorward verify` | The client proper (tasks 0004 and 0012) |
+| `phorward run` | Send the project to the server and run its checks ([client.md](client.md)) |
+| later `phorward verify` | The harness gate runner (task 0012) |
 
 Exit codes match the wrapper's, so a script sees one set whether the failure was local or remote: `0` passed,
 `1` a check failed, `2` configuration or usage error (nothing was sent), `70` infrastructure error (ssh failed,

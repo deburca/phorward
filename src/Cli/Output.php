@@ -23,6 +23,13 @@ final class Output {
     fwrite($this->out, $text . "\n");
   }
 
+  /**
+   * Writes text exactly as given (a report that already ends in a newline).
+   */
+  public function write(string $text): void {
+    fwrite($this->out, $text);
+  }
+
   public function error(string $text): void {
     fwrite($this->err, $text . "\n");
   }

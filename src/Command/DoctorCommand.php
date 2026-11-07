@@ -253,7 +253,7 @@ final class DoctorCommand {
   private function checkEndToEnd(ResolvedConfig $config, array $image, Transport $transport, array &$checks): void {
     $php = (string) ($image['php'] ?? '');
     try {
-      $command = Protocol::runCommand((string) $config->get('profile'), $php, (string) $config->get('module'), ['lint']);
+      $command = Protocol::runCommand((string) $config->get('profile'), (string) $config->get('module'), ['lint'], $php);
     }
     catch (\InvalidArgumentException) {
       $checks[] = Check::fail('end to end', 'the server reported an image with a PHP version this client will not use: ' . json_encode($php),

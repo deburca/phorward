@@ -6,6 +6,7 @@ namespace Phorward\Cli;
 
 use Phorward\Command\ConfigCommand;
 use Phorward\Command\DoctorCommand;
+use Phorward\Command\RunCommand;
 use Phorward\Command\ServerInstallCommand;
 use Phorward\Config\ConfigException;
 use Phorward\Config\ConfigLoader;
@@ -31,12 +32,16 @@ final class Application {
 
   private const COMMANDS = [
     'config' => 'Print the resolved configuration and where each value came from',
+    'run' => 'Send this project to the server and run its checks there',
     'doctor' => 'Check the connection, the server and the image, and say how to fix what is wrong',
     'server:install' => 'Install or update the server side (prints a plan; --apply runs it over ssh)',
   ];
 
   /** @var \Closure(string, int): \Phorward\Ssh\Transport */
   private readonly \Closure $transportFactory;
+
+  /** @var \Closure(float): void */
+  private readonly \Closure $sleep;
 
   /**
    * @param \Closure(string, int): \Phorward\Ssh\Transport|NULL $transportFactory Makes the transport for a host and
@@ -47,7 +52,11 @@ final class Application {
     private readonly Output $output,
     ?\Closure $transportFactory = NULL,
     private readonly ?ProfileCatalog $catalog = NULL,
+    ?\Closure $sleep = NULL,
   ) {
+    $this->sleep = $sleep ?? static function (float $seconds): void {
+      usleep((int) round($seconds * 1000000));
+    };
     $this->transportFactory = $transportFactory ?? static fn(string $host, int $timeout) => new SshTransport($host, $timeout);
   }
 
@@ -75,6 +84,15 @@ final class Application {
         }
         $command = new ConfigCommand($this->schema, new ConfigLoader($this->schema), $this->output);
         return $command->run($parsed['positional'], $parsed['options'], $env, $cwd);
+      }
+      if ($command === 'run') {
+        $parsed = ArgParser::parse($rest, ['help']);
+        if (isset($parsed['options']['help'])) {
+          $this->help();
+          return self::EXIT_OK;
+        }
+        $run = new RunCommand(new ConfigLoader($this->schema), $this->transportFactory, new TreeArchiver(), $this->output, $this->sleep);
+        return $run->run($parsed['positional'], $parsed['options'], $env, $cwd);
       }
       if ($command === 'doctor') {
         $parsed = ArgParser::parse($rest, ['help']);

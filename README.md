@@ -34,7 +34,8 @@ under test is mounted read-only at run time and never baked in.
 came from; the settings, their scopes and the layering rules are in [docs/configuration.md](docs/configuration.md).
 `phorward doctor` checks the connection, the server and the image end to end and says how to fix what it finds.
 `phorward server:install <admin-host>` prints, and with `--apply` runs, the steps that set up the server side.
-`run` follows.
+`phorward run` sends the project to the server and reports; see [docs/client.md](docs/client.md) for composer `scripts`
+aliases, exit statuses and report formats.
 
 ## Try the server tools
 
