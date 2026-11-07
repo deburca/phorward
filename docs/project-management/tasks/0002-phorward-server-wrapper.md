@@ -1,7 +1,7 @@
 ---
 type: task
 tags: [phorward/task]
-status: review        # backlog | todo | in-progress | review | done | blocked | dropped
+status: done          # backlog | todo | in-progress | review | done | blocked | dropped
 priority: medium       # high | medium | low
 project: "[[first-public-release]]"
 area: server
