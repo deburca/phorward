@@ -13,10 +13,16 @@
 #
 # Build with server/build-image, which supplies the `module` build context (the project checkout, used
 # only for composer.json and composer.lock) and the PROJECT_* build args.
+#
+# Reproducibility: the base images are named by digest (build-image passes them from the profile manifest) and the
+# fallback tools are installed from a lock in locks/. The project's own dependencies come from its composer.lock.
+# `build-image --refresh-locks` re-resolves the tools on purpose.
 ARG PHP_VERSION=8.3
-FROM docker.io/library/composer:2 AS composer
+ARG COMPOSER_IMAGE=docker.io/library/composer:2
+ARG PHP_IMAGE=docker.io/library/php:${PHP_VERSION}-cli-trixie
+FROM ${COMPOSER_IMAGE} AS composer
 
-FROM docker.io/library/php:${PHP_VERSION}-cli-trixie AS base
+FROM ${PHP_IMAGE} AS php-base
 
 # opcache is compiled into PHP core from 8.5, so it is only installed as an extension before that.
 RUN apt-get update \
@@ -29,20 +35,26 @@ RUN apt-get update \
 COPY --from=composer /usr/bin/composer /usr/local/bin/composer
 ENV COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1 COMPOSER_MEMORY_LIMIT=-1
 
+# Target `locks`: resolves the fallback tools afresh and leaves composer.json and composer.lock in /out/lint-tools.
+# Only `build-image --refresh-locks` builds it. Resolved on the lowest supported PHP.
+FROM php-base AS locks
+RUN mkdir -p /out/lint-tools
+COPY locks/lint-tools/composer.json /out/lint-tools/composer.json
+RUN cd /out/lint-tools && rm -f composer.lock && composer update --no-install --no-progress
+RUN mkdir -p /export/lint-tools && cp /out/lint-tools/composer.json /out/lint-tools/composer.lock /export/lint-tools/
+
+FROM php-base AS base
+ARG PHP_IMAGE
+ARG COMPOSER_IMAGE
+
 # Fallback tools, used when the project's own vendor/bin has none. Kept apart so they never constrain
-# the project's dependencies.
-RUN mkdir -p /opt/lint-tools
-COPY <<'JSON' /opt/lint-tools/composer.json
-{
-  "require": {
-    "squizlabs/php_codesniffer": "^3",
-    "phpstan/phpstan": "^2",
-    "phpunit/phpunit": "^11"
-  },
-  "minimum-stability": "stable"
-}
-JSON
-RUN composer install --working-dir=/opt/lint-tools --no-progress --prefer-dist
+# the project's dependencies; installed from the committed lock.
+COPY locks/lint-tools/ /opt/lint-tools/
+# Permissions are set in the same step that creates the files: a chmod in a later step would copy every file
+# into a new layer.
+RUN composer install --working-dir=/opt/lint-tools --no-progress --prefer-dist \
+ && chmod -R a-w /opt/lint-tools \
+ && composer clear-cache
 
 COPY --chmod=755 with-project /usr/local/bin/with-project
 COPY --chmod=755 phorward-check /usr/local/bin/phorward-check
@@ -53,6 +65,8 @@ RUN { \
       echo "phpcs=$(/opt/lint-tools/vendor/bin/phpcs --version | cut -d' ' -f3)"; \
       echo "phpstan=$(/opt/lint-tools/vendor/bin/phpstan --version | awk '{print $NF}')"; \
       echo "phpunit=$(/opt/lint-tools/vendor/bin/phpunit --version | awk '{print $2}')"; \
+      echo "base-image=${PHP_IMAGE}"; \
+      echo "composer-image=${COMPOSER_IMAGE}"; \
     } > /opt/TOOL-VERSIONS
 
 # Named `final`, not `module`: `COPY --from=module` must resolve to the build context, and a stage
@@ -74,14 +88,14 @@ RUN test -n "$PROJECT_PACKAGE" && test -n "$PROJECT_NAME" \
  && composer install --no-progress --prefer-dist --no-scripts --no-autoloader \
  && { v="$(composer show phpunit/phpunit 2>/dev/null | awk '/^versions/{print $4}')"; [ -z "$v" ] || echo "project-phpunit=$v" >> /opt/TOOL-VERSIONS; } \
  && mv vendor /opt/vendor \
+ && chmod -R a-w /opt/vendor \
  && cd / && rm -rf /opt/project-src \
  && composer clear-cache \
  && echo "project=${PROJECT_PACKAGE}" >> /opt/TOOL-VERSIONS \
  && echo "project-rev=${PROJECT_REV}" >> /opt/TOOL-VERSIONS
 
 # Non-root; /opt is read-only to it. Runtime writable space is tmpfs mounts, not image layers.
-RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin validate \
- && chmod -R a-w /opt/lint-tools /opt/vendor
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin validate
 USER validate
 WORKDIR /tmp
 ENV PATH="/opt/lint-tools/vendor/bin:${PATH}" HOME=/tmp COMPOSER_HOME=/tmp/.composer

@@ -1,0 +1,10 @@
+{
+    "repositories": [{"type": "composer", "url": "https://packages.drupal.org/8"}],
+    "require": {
+        "drupal/coder": "^9",
+        "mglaman/phpstan-drupal": "^2",
+        "phpstan/phpstan-deprecation-rules": "^2"
+    },
+    "config": {"allow-plugins": {"dealerdirect/phpcodesniffer-composer-installer": true}},
+    "minimum-stability": "stable"
+}

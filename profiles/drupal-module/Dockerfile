@@ -14,11 +14,17 @@
 #
 # Build with server/build-image, which supplies the `module` build context (a checkout of the
 # module, used only to resolve its composer dependencies and patches) and the PROJECT_* build args.
+#
+# Reproducibility: the base images are named by digest (build-image passes them from the profile manifest) and the
+# lint tools and the Drupal project are installed from lock files kept in locks/, so two builds of the same inputs
+# give the same tool versions. `build-image --refresh-locks` re-resolves them on purpose.
 ARG PHP_VERSION=8.3
-FROM docker.io/library/composer:2 AS composer
-
+ARG COMPOSER_IMAGE=docker.io/library/composer:2
 # trixie, not bookworm: Drupal 11.4 needs SQLite >= 3.45 and bookworm ships 3.40.
-FROM docker.io/library/php:${PHP_VERSION}-cli-trixie AS base
+ARG PHP_IMAGE=docker.io/library/php:${PHP_VERSION}-cli-trixie
+FROM ${COMPOSER_IMAGE} AS composer
+
+FROM ${PHP_IMAGE} AS php-base
 
 # opcache is compiled into PHP core from 8.5, so it is only installed as an extension before that.
 RUN apt-get update \
@@ -33,32 +39,44 @@ RUN apt-get update \
 COPY --from=composer /usr/bin/composer /usr/local/bin/composer
 ENV COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1 COMPOSER_MEMORY_LIMIT=-1
 
-# The lint tools, installed in their own directory so they never constrain the project's own
-# dependencies (same layout a CI "install lint tools" step produces).
-RUN mkdir -p /opt/lint-tools
-COPY <<'JSON' /opt/lint-tools/composer.json
-{
-  "repositories": [{"type": "composer", "url": "https://packages.drupal.org/8"}],
-  "require": {
-    "drupal/coder": "^9",
-    "mglaman/phpstan-drupal": "^2",
-    "phpstan/phpstan-deprecation-rules": "^2"
-  },
-  "config": {"allow-plugins": {"dealerdirect/phpcodesniffer-composer-installer": true}},
-  "minimum-stability": "stable"
-}
-JSON
-RUN composer install --working-dir=/opt/lint-tools --no-progress --prefer-dist
-
-# Module-agnostic Drupal project: core, core-dev (phpunit 11, test traits) and drush.
-RUN composer create-project drupal/recommended-project:^11 /opt/drupal-project --no-install --no-progress \
- && cd /opt/drupal-project \
+# Target `locks`: resolves the lint tools and the Drupal project afresh and leaves composer.json and composer.lock
+# for each in /out. Only `build-image --refresh-locks` builds it. Resolved on the lowest supported PHP, so the locks
+# install on every supported version.
+FROM php-base AS locks
+RUN mkdir -p /out/lint-tools /out/drupal-project
+COPY locks/lint-tools/composer.json /out/lint-tools/composer.json
+RUN cd /out/lint-tools && rm -f composer.lock && composer update --no-install --no-progress
+RUN composer create-project drupal/recommended-project:^11 /out/drupal-project --no-install --no-progress \
+ && cd /out/drupal-project \
  && composer config allow-plugins.drupal/core-composer-scaffold true \
  && composer config allow-plugins.drupal/core-project-message true \
  && composer config allow-plugins.cweagans/composer-patches true \
- && composer require drush/drush --no-progress --prefer-dist \
- && composer require --dev "drupal/core-dev:^11" --update-with-all-dependencies --no-progress --prefer-dist \
+ && composer require drush/drush --no-install --no-progress \
+ && composer require --dev "drupal/core-dev:^11" --update-with-all-dependencies --no-install --no-progress \
+ && test -f composer.lock
+RUN mkdir -p /export/lint-tools /export/drupal-project \
+ && cp /out/lint-tools/composer.json /out/lint-tools/composer.lock /export/lint-tools/ \
+ && cp /out/drupal-project/composer.json /out/drupal-project/composer.lock /export/drupal-project/
+
+FROM php-base AS base
+ARG PHP_IMAGE
+ARG COMPOSER_IMAGE
+
+# The lint tools, installed in their own directory so they never constrain the project's own
+# dependencies (same layout a CI "install lint tools" step produces), from the committed lock.
+# Permissions are set in the same step that creates the files: a chmod in a later step would copy every
+# file into a new layer (it once cost 450 MB).
+COPY locks/lint-tools/ /opt/lint-tools/
+RUN composer install --working-dir=/opt/lint-tools --no-progress --prefer-dist \
+ && chmod -R a-w /opt/lint-tools \
+ && composer clear-cache
+
+# Module-agnostic Drupal project: core, core-dev (phpunit 11, test traits) and drush, from the committed lock.
+COPY locks/drupal-project/ /opt/drupal-project/
+RUN cd /opt/drupal-project \
+ && composer install --no-progress --prefer-dist \
  && mkdir -p web/sites/simpletest \
+ && chmod -R a-w vendor web/core \
  && composer clear-cache
 
 # Optional in-container MariaDB (no network needed): `with-mariadb <cmd>` starts a throwaway server
@@ -78,6 +96,8 @@ RUN { \
       echo "phpunit=$(/opt/drupal-project/vendor/bin/phpunit --version | awk '{print $2}')"; \
       echo "drupal-core=$(composer --working-dir=/opt/drupal-project show drupal/core | awk '/^versions/{print $4}')"; \
       echo "mariadb=$(mariadbd --version | awk '{print $3}')"; \
+      echo "base-image=${PHP_IMAGE}"; \
+      echo "composer-image=${COMPOSER_IMAGE}"; \
     } > /opt/TOOL-VERSIONS
 
 # Named `final`, not `module`: `COPY --from=module` must resolve to the build context, and a stage
@@ -111,9 +131,9 @@ RUN test -n "$PROJECT_PACKAGE" && test -n "$PROJECT_NAME" \
  && echo "module=${PROJECT_PACKAGE}" >> /opt/TOOL-VERSIONS \
  && echo "module-rev=${PROJECT_REV}" >> /opt/TOOL-VERSIONS
 
-# Non-root; /opt is read-only to it. Runtime writable space is tmpfs mounts, not image layers.
+# Non-root; /opt is read-only to it (the files belong to root and the root filesystem is read-only at run time).
+# Runtime writable space is tmpfs mounts, not image layers.
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin validate \
- && chmod -R a-w /opt/lint-tools /opt/drupal-project/vendor /opt/drupal-project/web/core \
  && chmod 1777 /opt/drupal-project/web/sites/simpletest
 USER validate
 WORKDIR /opt/drupal-project

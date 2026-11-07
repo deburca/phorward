@@ -53,10 +53,14 @@ What `phorward-run`, `smoke-test` and the other tools rely on. A profile must pr
 for humans. **User:** non-root, uid 10001. **`/opt/TOOL-VERSIONS`:** `key=value` lines of the resolved versions,
 returned in every result.
 
-**Dockerfile:** `FROM … AS base` and `FROM base AS final`; never a stage named `module`, which would shadow the
-build context of that name. `COPY --from=module` reads the project checkout. Build arguments the tools pass:
-`PHP_VERSION`, `PROJECT_PACKAGE` (Composer package name), `PROJECT_NAME`, `PROJECT_REV`, `LOCK_SHA256`, and
-`DEV_PACKAGES` only when `build.dev_packages` is true.
+**Dockerfile:** stages `php-base` (PHP, Composer, extensions), `locks` (resolves the tools afresh; only
+`--refresh-locks` builds it), `base` (installs from the committed locks) and `final` (`FROM base AS final`); never a
+stage named `module`, which would shadow the build context of that name. `COPY --from=module` reads the project
+checkout. Build arguments the tools pass: `PHP_VERSION`, `PHP_IMAGE` and `COMPOSER_IMAGE` (the base images, by digest
+from the manifest's pins), `PROJECT_PACKAGE` (Composer package name), `PROJECT_NAME`, `PROJECT_REV`, `LOCK_SHA256`, and
+`DEV_PACKAGES` only when `build.dev_packages` is true. Nothing is resolved outside the `locks` stage: tools install
+from `locks/`. A recursive `chmod` belongs in the same step that creates the files; in a step of its own it copies every
+file into a new layer (a contract test enforces this).
 
 ## The manifest
 
@@ -70,6 +74,11 @@ build context of that name. `COPY --from=module` reads the project checkout. Bui
 | `build.dev_packages` | Whether `--dev-package` is accepted |
 | `build.needs_lock` | Whether the project must have a `composer.lock` |
 | `build.stale_hash_file` | The file whose hash goes into `phorward.lock-sha256` |
+| `base.php_image`, `base.composer_image` | The unpinned names of the base images; `{php}` stands for the PHP version |
+| `base.pins` | The digests the build starts from, per PHP version and for Composer. Written by `build-image --pin-base` |
+| `versions.php` | The PHP versions this profile is built and verified for |
+| `versions.policy` | The version policy in words: what is locked, what floats, how it moves |
+| `locks` | The lock files under `profiles/<name>/locks/` that a build needs; `build-image` refuses to build without them and says how to make them |
 | `defaults.php` | The PHP version used when none is asked for |
 | `defaults.cpus`, `defaults.pids` | Per-run defaults (a policy can only lower them) |
 | `defaults.memory` | Default memory per database, e.g. `{"mariadb": "6g", "sqlite": "4g"}` |
@@ -87,7 +96,9 @@ container only as separate arguments, so nothing in a manifest needs quoting aga
 ## Adding a profile
 
 1. Create `profiles/<name>/` with a `Dockerfile` following the contract above and a `manifest.json`.
-2. Put any helper scripts the Dockerfile installs and the manifest's commands call in the same directory
+2. Put the requirement files for the tools in `locks/<tool>/composer.json`, list the lock files in the manifest's `locks`,
+   generate them with `build-image --refresh-locks` and pin the base images with `--pin-base`; commit the results.
+   Put any helper scripts the Dockerfile installs and the manifest's commands call in the same directory
    (`php-library` has `with-project`, which makes a writable copy of the tree with the baked `vendor/`, and
    `phorward-check`, which picks the project's configuration or a default). A helper that sets something up
    should exit **125** if the setup fails: the wrapper reports that as an infrastructure error, where any other

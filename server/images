@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""images: list and prune phorward images on this host.
+
+    images list [--profile NAME]
+    images prune [--keep N] [--apply]
+
+Every build leaves two kinds of tag on the image it makes:
+
+  phorward:<name>-php<ver>            the moving tag. It always points at the newest build, and it is what
+                                      phorward-run runs. Never pruned.
+  phorward:<name>-php<ver>-<yyyymmdd> a dated tag: the same image, named for the day it was built. Kept so a
+                                      bad rebuild can be rolled back by retagging; pruned by age.
+
+`prune` removes the dated tags of each name and PHP version beyond the newest N (default 3), and so frees the
+image under a tag when nothing else names it. It only prints what it would do unless you pass --apply. It only
+ever touches dated tags of images that carry a phorward.profile label, and never a moving tag. Untagged layers
+left behind by rebuilds are the engine's to clean (`podman image prune` or `docker image prune`).
+
+The container engine is PHORWARD_ENGINE, else podman or docker, whichever is installed.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+TAG_RE = re.compile(r"^phorward:([a-z][a-z0-9_]*)-php([0-9]+\.[0-9]+)(?:-([0-9]{8}))?$")
+
+
+def engine():
+    chosen = os.environ.get("PHORWARD_ENGINE")
+    if chosen:
+        return chosen
+    for name in ("podman", "docker"):
+        found = shutil.which(name)
+        if found:
+            return found
+    sys.exit("images: neither podman nor docker is installed")
+
+
+def run(eng, *args):
+    done = subprocess.run([eng, *args], capture_output=True, text=True, timeout=120)
+    return done.returncode, done.stdout, done.stderr
+
+
+def collect(eng):
+    """Every phorward tag on the host, with what its image says about itself."""
+    rc, out, err = run(eng, "images", "--format", "{{.Repository}}:{{.Tag}}")
+    if rc != 0:
+        sys.exit(f"images: cannot list images: {err.strip()[:200]}")
+    found = []
+    for raw in sorted({t.removeprefix("localhost/") for t in out.split()}):
+        m = TAG_RE.match(raw)
+        if not m:
+            continue
+        rc, info, _ = run(eng, "image", "inspect", "-f", "{{json .Config.Labels}}|{{.Created}}|{{.Size}}|{{.Id}}", raw)
+        if rc != 0:
+            continue
+        labels_json, _, rest = info.strip().partition("|")
+        try:
+            labels = json.loads(labels_json) or {}
+        except ValueError:
+            continue
+        if not labels.get("phorward.profile"):
+            continue
+        created, _, rest = rest.partition("|")
+        size, _, image_id = rest.partition("|")
+        found.append({
+            "tag": raw, "name": m.group(1), "php": m.group(2), "date": m.group(3),
+            "profile": labels["phorward.profile"], "built": created[:10], "size": int(size) if size.isdigit() else 0,
+            "id": image_id[:19], "lock": (labels.get("phorward.lock-sha256") or "")[:12],
+        })
+    return found
+
+
+def human(nbytes):
+    for unit, factor in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+        if nbytes >= factor:
+            return f"{nbytes / factor:.1f} {unit}"
+    return f"{nbytes} B"
+
+
+def groups(images):
+    result = {}
+    for image in images:
+        result.setdefault((image["name"], image["php"]), []).append(image)
+    return dict(sorted(result.items()))
+
+
+def cmd_list(eng, args):
+    images = [i for i in collect(eng) if args.profile in (None, i["profile"])]
+    if not images:
+        print("no phorward images")
+        return 0
+    print(f"{'IMAGE':<34} {'PROFILE':<14} {'BUILT':<11} {'SIZE':<9} {'LOCK':<13} DATED TAGS")
+    for (name, php), members in groups(images).items():
+        moving = next((m for m in members if m["date"] is None), None)
+        dated = sorted((m for m in members if m["date"]), key=lambda m: m["date"], reverse=True)
+        head = moving or dated[0]
+        print(f"{f'phorward:{name}-php{php}':<34} {head['profile']:<14} {head['built']:<11} {human(head['size']):<9} "
+              f"{head['lock'] or '-':<13} {', '.join(m['date'] for m in dated) or '-'}"
+              + ("" if moving else "   (no moving tag)"))
+    return 0
+
+
+def cmd_prune(eng, args):
+    if args.keep < 0:
+        sys.exit("images: --keep must be 0 or more")
+    doomed = []
+    for (name, php), members in groups(collect(eng)).items():
+        dated = sorted((m for m in members if m["date"]), key=lambda m: m["date"], reverse=True)
+        doomed += dated[args.keep:]
+    if not doomed:
+        print(f"nothing to prune: no name has more than {args.keep} dated tag(s)")
+        return 0
+    verb = "removing" if args.apply else "would remove"
+    failures = 0
+    for image in doomed:
+        print(f"{verb} {image['tag']} (built {image['built']}, {human(image['size'])})")
+        if args.apply:
+            rc, _, err = run(eng, "rmi", image["tag"])
+            if rc != 0:
+                failures += 1
+                print(f"  failed: {err.strip().splitlines()[-1] if err.strip() else 'unknown error'}", file=sys.stderr)
+    if not args.apply:
+        print("nothing was removed; run again with --apply to do this")
+    return 1 if failures else 0
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="images", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    lst = sub.add_parser("list", help="show the phorward images and their dated tags")
+    lst.add_argument("--profile")
+    prune = sub.add_parser("prune", help="remove old dated tags")
+    prune.add_argument("--keep", type=int, default=3, help="dated tags to keep per name and PHP version (default 3)")
+    prune.add_argument("--apply", action="store_true", help="do it; without this only print")
+    args = parser.parse_args(argv)
+    eng = engine()
+    return cmd_list(eng, args) if args.command == "list" else cmd_prune(eng, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

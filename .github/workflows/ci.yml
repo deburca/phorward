@@ -27,7 +27,7 @@ jobs:
       - name: shellcheck
         run: shellcheck server/build-image server/smoke-test server/parity-check server/hostile-test server/access-test profiles/*/with-* profiles/*/phorward-check
       - name: python syntax
-        run: python3 -I -m py_compile server/phorward-run server/manifest-get server/authorized-key server/shard-tests.py tests/fakes/fake-engine
+        run: python3 -I -m py_compile server/phorward-run server/manifest-get server/authorized-key server/images server/shard-tests.py tests/fakes/fake-engine
       - name: unit tests (shard-tests, phorward-run against a fake engine)
         run: python3 -I -m unittest discover -s tests -v
       - name: shard-tests --check on the fixture projects

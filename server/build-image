@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build a phorward validation image from a profile (profiles/<name>/: Dockerfile + manifest.json).
 #   build-image [--profile drupal-module] [--php 8.3] [--module PATH] [--name NAME] [--package VENDOR/NAME]
-#               [--dev-package PKG]... [--tag TAG] [--base-only] [--list-profiles]
+#               [--dev-package PKG]... [--tag TAG] [--base-only] [--no-cache] [--list-profiles]
+#   build-image --refresh-locks [--profile NAME]     re-resolve the lint tools and the project skeleton
+#   build-image --pin-base [--profile NAME]          pin the base images to their current digests
 # Each profile builds in two stages. The base is project-independent (PHP, Composer, tools); the final stage
 # adds one project's dependencies. --module is a checkout of that project: it supplies what the image bakes
 # in (never the tree under test, which is supplied at run time). The package name is read from its
@@ -11,12 +13,19 @@
 # --base-only builds just the base, tagged phorward-base-<profile>:php<ver>, and needs no project.
 # --list-profiles prints the profiles found under profiles/ and exits; --print-name prints the short name that
 # would be used for --module and exits.
+# Reproducibility: the base images come from the profile manifest's pins (digests), and the tools and the project
+# skeleton are installed from lock files in profiles/<name>/locks/, so the same inputs give the same versions.
+# --refresh-locks and --pin-base are the deliberate, reviewable ways to move them: they change files in the
+# profile directory (commit the result) and need network access. An unpinned base is resolved to its current
+# digest, which is recorded in the image, with a warning.
+# --no-cache rebuilds every layer (use it to prove a rebuild gives the same versions).
+# PHORWARD_PROFILES_DIR names another directory of profiles (default: profiles/ next to this script).
 # The container engine is PHORWARD_ENGINE, else podman or docker, whichever is installed.
 # Prints the tool versions recorded in the image (/opt/TOOL-VERSIONS) when done.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PROFILES_DIR="$HERE/../profiles"
+PROFILES_DIR="${PHORWARD_PROFILES_DIR:-$HERE/../profiles}"
 PROFILE="drupal-module"
 PHP_VERSION=""
 MODULE="${PHORWARD_MODULE_DIR:-$PWD}"
@@ -27,6 +36,9 @@ TAG=""
 BASE_ONLY=0
 LIST=0
 PRINT_NAME=0
+REFRESH_LOCKS=0
+PIN_BASE=0
+NO_CACHE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --profile) PROFILE="$2"; shift 2 ;;
@@ -39,13 +51,16 @@ while [ $# -gt 0 ]; do
     --base-only) BASE_ONLY=1; shift ;;
     --list-profiles) LIST=1; shift ;;
     --print-name) PRINT_NAME=1; shift ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    --refresh-locks) REFRESH_LOCKS=1; shift ;;
+    --pin-base) PIN_BASE=1; shift ;;
+    --no-cache) NO_CACHE=1; shift ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 # manifest <dotted.path>: one value from the profile's manifest (empty if absent).
-manifest() { "$HERE/manifest-get" "$PROFILE" "$1"; }
+manifest() { PHORWARD_PROFILES_DIR="$PROFILES_DIR" "$HERE/manifest-get" "$PROFILE" "$@"; }
 
 if [ "$LIST" = 1 ]; then
   for m in "$PROFILES_DIR"/*/manifest.json; do
@@ -66,14 +81,93 @@ CONTEXT="$PROFILES_DIR/$PROFILE"
 [ -n "$PHP_VERSION" ] || PHP_VERSION="$(manifest defaults.php)"
 [ -n "$PHP_VERSION" ] || PHP_VERSION="8.3"
 
+EMPTY=""
+trap 'if [ -n "$EMPTY" ]; then rmdir "$EMPTY" 2>/dev/null || true; fi' EXIT
+NOCACHE_ARGS=()
+[ "$NO_CACHE" = 0 ] || NOCACHE_ARGS=(--no-cache)
+
+# The unpinned name of a base image, from the manifest's template.
+php_tag() { local tpl; tpl="$(manifest base.php_image)"; echo "${tpl//\{php\}/$1}"; }
+composer_tag() { manifest base.composer_image; }
+# The digest reference recorded in the manifest for a base image, if any.
+pinned() {   # pinned php <version> | pinned composer
+  python3 -I - "$CONTEXT/manifest.json" "$1" "${2:-}" <<'PY'
+import json, sys
+pins = json.load(open(sys.argv[1])).get("base", {}).get("pins", {})
+print(pins.get("php", {}).get(sys.argv[3], "") if sys.argv[2] == "php" else pins.get("composer", ""))
+PY
+}
+# Pulls an image by tag and prints repo@sha256:... (the digest that names exactly what was pulled).
+digest_ref() {
+  local ref="$1" digest
+  "$ENGINE" pull -q "$ref" >/dev/null || { echo "cannot pull $ref" >&2; return 1; }
+  digest="$("$ENGINE" image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" | head -1 | sed 's/.*@//')"
+  [ -n "$digest" ] || { echo "no digest found for $ref" >&2; return 1; }
+  echo "${ref%:*}@$digest"
+}
+
+if [ "$PIN_BASE" = 1 ]; then
+  [ -n "$(manifest versions.php)" ] || { echo "profile $PROFILE lists no versions.php to pin" >&2; exit 1; }
+  lines="composer $(digest_ref "$(composer_tag)")"$'\n'
+  for v in $(manifest versions.php --lines); do
+    lines+="php $v $(digest_ref "$(php_tag "$v")")"$'\n'
+  done
+  PINS="$lines" python3 -I - "$CONTEXT/manifest.json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+manifest = json.load(open(path))
+pins = {"php": {}, "composer": ""}
+for line in os.environ["PINS"].splitlines():
+    parts = line.split()
+    if parts[0] == "composer":
+        pins["composer"] = parts[1]
+    else:
+        pins["php"][parts[1]] = parts[2]
+manifest.setdefault("base", {})["pins"] = pins
+open(path, "w").write(json.dumps(manifest, indent=2) + "\n")
+for version, ref in pins["php"].items():
+    print(f"php {version}: {ref}")
+print(f"composer: {pins['composer']}")
+PY
+  echo "pinned in $CONTEXT/manifest.json; review the change and commit it" >&2
+  exit 0
+fi
+
+# What the build starts FROM: the pinned digest, or (with a warning) whatever the tag points at today.
+PHP_REF="$(pinned php "$PHP_VERSION")"
+if [ -z "$PHP_REF" ]; then
+  echo "warning: the $PROFILE manifest does not pin the PHP $PHP_VERSION base image; using what $(php_tag "$PHP_VERSION") is now (pin it with --pin-base)" >&2
+  PHP_REF="$(digest_ref "$(php_tag "$PHP_VERSION")")" || exit 1
+fi
+COMPOSER_REF="$(pinned composer)"
+if [ -z "$COMPOSER_REF" ]; then
+  echo "warning: the $PROFILE manifest does not pin the Composer image; using what $(composer_tag) is now (pin it with --pin-base)" >&2
+  COMPOSER_REF="$(digest_ref "$(composer_tag)")" || exit 1
+fi
+BASE_ARGS=(--build-arg "PHP_VERSION=$PHP_VERSION" --build-arg "PHP_IMAGE=$PHP_REF" --build-arg "COMPOSER_IMAGE=$COMPOSER_REF")
+
+if [ "$REFRESH_LOCKS" = 1 ]; then
+  EMPTY="$(mktemp -d)"
+  IMAGE="phorward-locks-${PROFILE}:refresh"
+  "$ENGINE" build --target locks "${NOCACHE_ARGS[@]+"${NOCACHE_ARGS[@]}"}" --build-context "module=$EMPTY" "${BASE_ARGS[@]}" -t "$IMAGE" "$CONTEXT"
+  CID="$("$ENGINE" create "$IMAGE")"
+  mkdir -p "$CONTEXT/locks"
+  "$ENGINE" cp "$CID:/export/." "$CONTEXT/locks/"
+  "$ENGINE" rm "$CID" >/dev/null
+  "$ENGINE" rmi "$IMAGE" >/dev/null 2>&1 || true
+  echo "locks written to $CONTEXT/locks; review the change (git diff) and commit it"
+  exit 0
+fi
+for lock in $(manifest locks --lines); do
+  [ -f "$CONTEXT/locks/$lock" ] || { echo "missing lock file $CONTEXT/locks/$lock; create the locks with: build-image --refresh-locks --profile $PROFILE" >&2; exit 1; }
+done
+
 if [ "$BASE_ONLY" = 1 ]; then
   TAG="${TAG:-phorward-base-${PROFILE}:php${PHP_VERSION}}"
   # The Dockerfile declares a `module` build context; an empty one satisfies it for the base target.
   EMPTY="$(mktemp -d)"
-  trap 'rmdir "$EMPTY"' EXIT
-  "$ENGINE" build --target base \
-    --build-context "module=$EMPTY" \
-    --build-arg "PHP_VERSION=$PHP_VERSION" \
+  "$ENGINE" build --target base "${NOCACHE_ARGS[@]+"${NOCACHE_ARGS[@]}"}" \
+    --build-context "module=$EMPTY" "${BASE_ARGS[@]}" \
     -t "$TAG" "$CONTEXT"
   echo "built $TAG"
   "$ENGINE" run --rm --network none "$TAG" cat /opt/TOOL-VERSIONS
@@ -121,14 +215,14 @@ TAG="${TAG:-phorward:${NAME}-php${PHP_VERSION}-$(date +%Y%m%d)}"
 
 args=(--target final
   --build-context "module=$MODULE"
-  --build-arg "PHP_VERSION=$PHP_VERSION"
+  "${BASE_ARGS[@]}"
   --build-arg "PROJECT_PACKAGE=$PACKAGE"
   --build-arg "PROJECT_NAME=$NAME"
   --build-arg "PROJECT_REV=$REV"
   --build-arg "LOCK_SHA256=$LOCK_SHA"
   -t "$TAG" -t "phorward:${NAME}-php${PHP_VERSION}")
 [ -z "$DEV_PACKAGES" ] || args+=(--build-arg "DEV_PACKAGES=$DEV_PACKAGES")
-"$ENGINE" build "${args[@]}" "$CONTEXT"
+"$ENGINE" build "${NOCACHE_ARGS[@]+"${NOCACHE_ARGS[@]}"}" "${args[@]}" "$CONTEXT"
 
 echo "built $TAG"
 "$ENGINE" run --rm --network none "$TAG" cat /opt/TOOL-VERSIONS

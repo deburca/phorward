@@ -6,10 +6,11 @@ an array (or each string of a list) on its own line; --keys prints an object's k
 path prints nothing and exits 0, so shell callers can test with `[ -n "$value" ]`.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
-PROFILES = Path(__file__).resolve().parent.parent / "profiles"
+PROFILES = Path(os.environ.get("PHORWARD_PROFILES_DIR") or Path(__file__).resolve().parent.parent / "profiles")
 
 
 def main(argv):

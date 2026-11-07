@@ -13,6 +13,30 @@
     "needs_lock": false,
     "stale_hash_file": "composer.json"
   },
+  "base": {
+    "php_image": "docker.io/library/php:{php}-cli-trixie",
+    "composer_image": "docker.io/library/composer:2",
+    "pins": {
+      "php": {
+        "8.3": "docker.io/library/php@sha256:628102249d93494233b54490b785f12db9cd60f4dc89416dfca15973f2125f10",
+        "8.4": "docker.io/library/php@sha256:d63e8b80cd4c6cfd01cfa7c910522e299cdc7ca1a2b6d6563db48df3c17e6c55",
+        "8.5": "docker.io/library/php@sha256:50956f094e90a716d43bea28087d447555ad80510e386ab8c9c10d8c70d781a9"
+      },
+      "composer": "docker.io/library/composer@sha256:8de2184c6de224f4689e8f80ed5f5edaf0030b6b8b7839a22a2bcb6722ac87d0"
+    }
+  },
+  "versions": {
+    "php": [
+      "8.3",
+      "8.4",
+      "8.5"
+    ],
+    "policy": "Locked, moved on purpose. The base images are pinned by digest (build-image --pin-base) and the tools are installed from the lock files in locks/ (build-image --refresh-locks), so rebuilding the same inputs gives the same versions. Drupal follows ^11 within the lock: a refresh picks up the newest 11.x. The module's own dependencies are resolved at build time on top of the locked project."
+  },
+  "locks": [
+    "lint-tools/composer.lock",
+    "drupal-project/composer.lock"
+  ],
   "test_layout": "drupal",
   "defaults": {
     "php": "8.3",

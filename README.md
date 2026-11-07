@@ -58,6 +58,9 @@ Access is by one restricted SSH key per client ([docs/ssh-access.md](docs/ssh-ac
 can run `phorward-run` and nothing else. Limits are the server's, set in a policy file ([docs/policy.md](docs/policy.md)). After changing it, check it with
 `server/hostile-test`, which fills the run slots with hostile samples while timing the host's other services.
 
+Builds are reproducible (base images pinned by digest, tools installed from lock files; see
+[docs/image.md](docs/image.md)), and `server/images` lists and prunes the images they leave behind.
+
 `build-image` builds an image from a profile ([docs/profiles.md](docs/profiles.md)): `drupal-module` for a Drupal
 module, `php-library` for a plain PHP project. It reads the package name from `composer.json` and the project name
 from where the profile says (a Drupal module's `*.info.yml`, or the package name). The image records the mount path and name as labels (`phorward.module-path`,

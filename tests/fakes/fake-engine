@@ -35,14 +35,34 @@ elif cmd == "build":
 elif cmd == "info":
     print("[name=rootless]" if "podman" not in os.environ.get("FAKE_VERSION", "") else "true")
 elif cmd == "images":
-    print(os.environ.get("FAKE_IMAGES", DEFAULT_IMAGES))
+    # FAKE_IMAGES_JSON: [{"tag", "profile", "created", "size", "id", "lock"}] for tests that need several distinct images
+    table = json.loads(os.environ.get("FAKE_IMAGES_JSON", "[]"))
+    print("\n".join(e["tag"] for e in table) if table else os.environ.get("FAKE_IMAGES", DEFAULT_IMAGES))
+elif cmd == "pull":
+    print("fake-image-id")
+elif cmd == "create":
+    print("fakecontainer")
+elif cmd == "cp":
+    # `cp CID:/export/. DEST/`: copies the directory a test prepared in FAKE_EXPORT_DIR
+    import shutil
+    shutil.copytree(os.environ["FAKE_EXPORT_DIR"], args[-1], dirs_exist_ok=True)
+elif cmd == "rmi":
+    pass
 elif cmd == "image" and args[1] == "inspect":
     tag = args[-1]
-    labels = {"phorward.profile": os.environ.get("FAKE_PROFILE", "drupal-module"), "phorward.module-name": "smoke",
+    fmt = option("-f") or ""
+    if "RepoDigests" in fmt:
+        import hashlib
+        print("x@sha256:" + hashlib.sha256(tag.encode()).hexdigest())
+        sys.exit(0)
+    table = {e["tag"]: e for e in json.loads(os.environ.get("FAKE_IMAGES_JSON", "[]"))}
+    entry = table.get(tag, {})
+    labels = {"phorward.profile": entry["profile"] if "profile" in entry else os.environ.get("FAKE_PROFILE", "drupal-module"), "phorward.module-name": "smoke",
               "phorward.module-path": MODULE_PATH}
-    if os.environ.get("FAKE_LOCK"):
-        labels["phorward.lock-sha256"] = os.environ["FAKE_LOCK"]
-    print(json.dumps(labels) + "|2026-11-05T12:00:00Z")
+    lock = entry.get("lock") or os.environ.get("FAKE_LOCK")
+    if lock:
+        labels["phorward.lock-sha256"] = lock
+    print(json.dumps(labels) + "|" + entry.get("created", "2026-11-05T12:00:00Z") + "|" + str(entry.get("size", 1000000)) + "|" + entry.get("id", "sha256:" + "0" * 16))
 elif cmd == "run":
     if args[-3:] == ["cat", "/opt/TOOL-VERSIONS"] or args[-2:] == ["cat", "/opt/TOOL-VERSIONS"]:
         print("php=8.3.36\nphpcs=4.0.4\nphpstan=2.3.5\nphpunit=11.5.57")

@@ -53,12 +53,44 @@ class ProfileContractTests(unittest.TestCase):
         self.assertIn("COPY --from=module", dockerfile)
         self.assertNotRegex(dockerfile, r"(?i)hivelog")
 
+        # reproducibility: base images arrive as build arguments (digests from the manifest), tools come from locks
+        self.assertRegex(dockerfile, r"(?m)^ARG PHP_IMAGE=")
+        self.assertRegex(dockerfile, r"(?m)^ARG COMPOSER_IMAGE=")
+        self.assertRegex(dockerfile, r"(?m)^FROM \$\{PHP_IMAGE\} AS php-base$")
+        self.assertRegex(dockerfile, r"(?m)^FROM php-base AS locks$")
+        self.assertRegex(dockerfile, r"(?m)^FROM php-base AS base$")
+        self.assertIn("base-image=${PHP_IMAGE}", dockerfile, "the base image digest is recorded in /opt/TOOL-VERSIONS")
+        self.assertIn("/export", dockerfile, "the locks stage leaves its output in /export")
+        self.assertIn("composer install", dockerfile)
+        self.assertNotRegex(dockerfile, r"composer create-project[^\n]*\n(?:[^\n]*\n){0,8}?[^\n]*composer install", "no resolution outside the locks stage")
+        # A recursive chmod in a step of its own copies every file into a new layer (it once cost 450 MB); it is only free
+        # in the step that creates the files.
+        steps = re.sub(r"\\\n", " ", dockerfile).splitlines()
+        for step in (s for s in steps if s.startswith("RUN ") and "chmod -R" in s):
+            self.assertTrue("composer install" in step, f"chmod -R must share its step with the install that creates the files: {step[:80]}")
+
         # build section
         build = manifest["build"]
         self.assertIn(build["name_from"], NAME_FROM)
         self.assertIsInstance(build["dev_packages"], bool)
         if build["dev_packages"]:
             self.assertRegex(dockerfile, r"(?m)^ARG DEV_PACKAGES\b")
+
+        # versions, pins and locks
+        self.assertEqual(manifest["versions"]["php"], sorted(manifest["versions"]["php"]))
+        self.assertIn(defaults_php := manifest["defaults"]["php"], manifest["versions"]["php"])
+        self.assertIn("{php}", manifest["base"]["php_image"])
+        self.assertTrue(manifest["versions"]["policy"])
+        pins = manifest["base"]["pins"]
+        digest = r"^docker\.io/library/[a-z]+@sha256:[0-9a-f]{64}$"
+        for version in manifest["versions"]["php"]:
+            self.assertRegex(pins["php"].get(version, ""), digest, f"PHP {version} base image is pinned by digest")
+        self.assertRegex(pins["composer"], digest)
+        self.assertTrue(manifest["locks"])
+        for lock in manifest["locks"]:
+            self.assertTrue((directory / "locks" / lock).is_file(), f"missing lock file {lock}")
+            self.assertTrue((directory / "locks" / lock).with_name("composer.json").is_file(), f"missing requirements next to {lock}")
+            self.assertIn("content-hash", (directory / "locks" / lock).read_text())
 
         # run defaults
         defaults = manifest["defaults"]
@@ -112,6 +144,22 @@ class ProfileContractTests(unittest.TestCase):
                         self.assertTrue((directory / word).is_file(), f"{directory.name}: {word} not in profile")
 
 
+def profiles_copy(tmp: Path, pins: bool, locks: bool = True) -> Path:
+    """A private copy of the shipped profiles, so a test can change pins and locks without touching the repository."""
+    import shutil
+    dest = tmp / "profiles"
+    shutil.copytree(PROFILES, dest)
+    for manifest_path in dest.glob("*/manifest.json"):
+        manifest = json.loads(manifest_path.read_text())
+        if not pins:
+            manifest["base"]["pins"] = {}
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+    if not locks:
+        for lock_dir in dest.glob("*/locks"):
+            shutil.rmtree(lock_dir)
+    return dest
+
+
 def run_build(*args, files=None, extra_env=None):
     """Run build-image against the fake engine in a scratch project; returns (rc, stdout, stderr, calls)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -144,6 +192,20 @@ def build_args(calls):
 
 
 class BuildImageTests(unittest.TestCase):
+    PIN = "docker.io/library/php@sha256:" + "a" * 64
+    COMPOSER_PIN = "docker.io/library/composer@sha256:" + "b" * 64
+
+    def with_profiles(self, pins, locks=True):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        profiles = profiles_copy(Path(tmp.name), pins, locks)
+        if pins:
+            for manifest_path in profiles.glob("*/manifest.json"):
+                manifest = json.loads(manifest_path.read_text())
+                manifest["base"]["pins"] = {"php": {v: self.PIN for v in manifest["versions"]["php"]}, "composer": self.COMPOSER_PIN}
+                manifest_path.write_text(json.dumps(manifest, indent=2))
+        return profiles
+
     DRUPAL = {"composer.json": json.dumps({"name": "acme/thing"}), "thing.info.yml": "name: Thing\n"}
     LIB = {"composer.json": json.dumps({"name": "Acme/My-Lib"}), "composer.lock": "{}"}
 
@@ -213,6 +275,100 @@ class BuildImageTests(unittest.TestCase):
         rc, _, err, _ = run_build("--profile", "drupal-module", files={"composer.json": json.dumps({"name": "a/b"})})
         self.assertNotEqual(rc, 0)
         self.assertIn("info.yml", err)
+
+    def test_a_pinned_base_is_used_as_it_is_and_nothing_is_pulled(self):
+        profiles = self.with_profiles(pins=True)
+        rc, out, err, calls = run_build("--profile", "php-library", files=self.LIB, extra_env={"PHORWARD_PROFILES_DIR": str(profiles)})
+        self.assertEqual(rc, 0, err)
+        _, args = build_args(calls)
+        self.assertEqual(args["PHP_IMAGE"], self.PIN)
+        self.assertEqual(args["COMPOSER_IMAGE"], self.COMPOSER_PIN)
+        self.assertEqual([c for c in calls if c[0] == "pull"], [], "a pinned base needs no network")
+        self.assertNotIn("warning", err)
+
+    def test_an_unpinned_base_is_resolved_to_its_digest_with_a_warning(self):
+        profiles = self.with_profiles(pins=False)
+        rc, out, err, calls = run_build("--profile", "php-library", "--php", "8.4", files=self.LIB,
+                                        extra_env={"PHORWARD_PROFILES_DIR": str(profiles)})
+        self.assertEqual(rc, 0, err)
+        pulls = [c for c in calls if c[0] == "pull"]
+        self.assertEqual([p[-1] for p in pulls], ["docker.io/library/php:8.4-cli-trixie", "docker.io/library/composer:2"])
+        _, args = build_args(calls)
+        self.assertRegex(args["PHP_IMAGE"], r"^docker\.io/library/php@sha256:[0-9a-f]{64}$", "what was pulled is named by its digest")
+        self.assertRegex(args["COMPOSER_IMAGE"], r"^docker\.io/library/composer@sha256:[0-9a-f]{64}$")
+        self.assertIn("does not pin the PHP 8.4 base image", err)
+        self.assertIn("--pin-base", err)
+
+    def test_each_php_version_has_its_own_pin(self):
+        profiles = self.with_profiles(pins=True)
+        for manifest_path in profiles.glob("*/manifest.json"):
+            manifest = json.loads(manifest_path.read_text())
+            manifest["base"]["pins"]["php"]["8.4"] = "docker.io/library/php@sha256:" + "c" * 64
+            manifest_path.write_text(json.dumps(manifest, indent=2))
+        env = {"PHORWARD_PROFILES_DIR": str(profiles)}
+        self.assertEqual(build_args(run_build("--profile", "php-library", "--php", "8.4", files=self.LIB, extra_env=env)[3])[1]["PHP_IMAGE"],
+                         "docker.io/library/php@sha256:" + "c" * 64)
+        self.assertEqual(build_args(run_build("--profile", "php-library", "--php", "8.3", files=self.LIB, extra_env=env)[3])[1]["PHP_IMAGE"], self.PIN)
+
+    def test_a_missing_lock_file_is_refused_with_the_command_to_make_it(self):
+        profiles = self.with_profiles(pins=True, locks=False)
+        rc, _, err, calls = run_build("--profile", "php-library", files=self.LIB, extra_env={"PHORWARD_PROFILES_DIR": str(profiles)})
+        self.assertNotEqual(rc, 0)
+        self.assertIn("missing lock file", err)
+        self.assertIn("build-image --refresh-locks --profile php-library", err)
+        self.assertEqual([c for c in calls if c[0] == "build"], [])
+
+    def test_no_cache_is_passed_to_the_build(self):
+        profiles = self.with_profiles(pins=True)
+        rc, _, err, calls = run_build("--profile", "php-library", "--no-cache", files=self.LIB, extra_env={"PHORWARD_PROFILES_DIR": str(profiles)})
+        self.assertEqual(rc, 0, err)
+        self.assertIn("--no-cache", next(c for c in calls if c[0] == "build"))
+        rc, _, err, calls = run_build("--profile", "php-library", files=self.LIB, extra_env={"PHORWARD_PROFILES_DIR": str(profiles)})
+        self.assertNotIn("--no-cache", next(c for c in calls if c[0] == "build"))
+
+    def test_pin_base_writes_digests_for_every_supported_version_and_nothing_else(self):
+        profiles = self.with_profiles(pins=False)
+        manifest_path = profiles / "php-library" / "manifest.json"
+        before = json.loads(manifest_path.read_text())
+        rc, out, err, calls = run_build("--profile", "php-library", "--pin-base", extra_env={"PHORWARD_PROFILES_DIR": str(profiles)})
+        self.assertEqual(rc, 0, err)
+        after = json.loads(manifest_path.read_text())
+        pins = after["base"]["pins"]
+        self.assertEqual(sorted(pins["php"]), after["versions"]["php"])
+        for ref in list(pins["php"].values()) + [pins["composer"]]:
+            self.assertRegex(ref, r"^docker\.io/library/[a-z]+@sha256:[0-9a-f]{64}$")
+        self.assertTrue(pins["php"]["8.3"] != pins["php"]["8.4"], "each version gets its own digest")
+        before["base"]["pins"] = after["base"]["pins"]
+        self.assertEqual(before, after, "only base.pins changes")
+        self.assertEqual([c for c in calls if c[0] == "build"], [], "pinning builds nothing")
+        self.assertIn("php 8.5: docker.io/library/php@sha256:", out)
+        self.assertEqual(json.loads((profiles / "drupal-module" / "manifest.json").read_text())["base"]["pins"], {}, "other profiles are untouched")
+
+    def test_refresh_locks_builds_the_locks_stage_and_copies_out_only_the_export(self):
+        profiles = self.with_profiles(pins=True)
+        with tempfile.TemporaryDirectory() as export:
+            (Path(export) / "lint-tools").mkdir()
+            (Path(export) / "lint-tools" / "composer.lock").write_text('{"content-hash": "new"}')
+            (Path(export) / "lint-tools" / "composer.json").write_text("{}")
+            rc, out, err, calls = run_build("--profile", "php-library", "--refresh-locks",
+                                            extra_env={"PHORWARD_PROFILES_DIR": str(profiles), "FAKE_EXPORT_DIR": export})
+        self.assertEqual(rc, 0, err)
+        build = next(c for c in calls if c[0] == "build")
+        self.assertEqual(build[build.index("--target") + 1], "locks")
+        self.assertEqual([c[0] for c in calls if c[0] in ("create", "cp", "rm", "rmi")], ["create", "cp", "rm", "rmi"], "the temporary container and image are removed")
+        self.assertEqual(next(c for c in calls if c[0] == "cp")[1], "fakecontainer:/export/.")
+        self.assertEqual((profiles / "php-library" / "locks" / "lint-tools" / "composer.lock").read_text(), '{"content-hash": "new"}')
+        self.assertIn("review the change", out)
+        self.assertEqual([c for c in calls if c[0] == "run"], [], "no image of the project is built or run")
+
+    def test_the_shipped_manifests_pin_every_version(self):
+        """What build-image would use for a real build: every supported PHP version has a digest."""
+        for directory in profile_dirs():
+            manifest = json.loads((directory / "manifest.json").read_text())
+            for version in manifest["versions"]["php"]:
+                rc, out, err, calls = run_build("--profile", directory.name, "--php", version, files=self.LIB if directory.name == "php-library" else self.DRUPAL)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual([c for c in calls if c[0] == "pull"], [], f"{directory.name} {version} is pinned")
 
     def test_base_only_needs_no_project(self):
         rc, out, err, calls = run_build("--profile", "php-library", "--base-only")
