@@ -18,6 +18,10 @@ jobs:
           tools: composer
       - name: composer validate
         run: composer validate --strict
+      - name: client dependencies and PHP tests (PHP 8.3)
+        run: |
+          composer install --no-progress --no-interaction
+          vendor/bin/phpunit
       - name: php -l
         run: find bin src tests -name '*.php' -o -name phorward -type f | xargs -n1 php -l
       - name: shellcheck

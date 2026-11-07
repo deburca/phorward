@@ -28,6 +28,12 @@ under test is mounted read-only at run time and never baked in.
 - About 8 GB RAM for Kernel tests with MariaDB (`--memory 6g`)
 - x86_64 or arm64
 
+## The client
+
+`bin/phorward` is being built. So far `phorward config` prints the resolved configuration and where each value
+came from; the settings, their scopes and the layering rules are in [docs/configuration.md](docs/configuration.md).
+`run`, `doctor` and `server:install` follow.
+
 ## Try the server tools
 
 ```bash
@@ -59,7 +65,8 @@ See [docs/image.md](docs/image.md) for the design and measurements.
 ## Tests
 
 ```bash
-python3 -I -m unittest discover -s tests -v   # unit tests for server/shard-tests.py
+python3 -I -m unittest discover -s tests -v   # the server tools: shard-tests, phorward-run, profiles, authorized-key
+composer install && vendor/bin/phpunit         # the PHP client: configuration loader and commands
 shellcheck server/build-image server/smoke-test server/parity-check server/hostile-test server/access-test profiles/*/with-* profiles/*/phorward-check
 ```
 

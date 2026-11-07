@@ -4,21 +4,23 @@
 /**
  * phorward command line entry point.
  *
- * Placeholder: the run, config, doctor and server:install commands arrive with the client work.
- * Until then the server-side tools in server/ are used directly.
+ * Implemented so far: help, version and config. The run, doctor and server:install commands arrive with the
+ * rest of the client work; until then the server-side tools in server/ are used directly.
  */
 
 declare(strict_types=1);
 
-const PHORWARD_VERSION = '0.0.0-dev';
-
-$command = $argv[1] ?? 'help';
-
-if (in_array($command, ['--version', '-V', 'version'], TRUE)) {
-  fwrite(STDOUT, 'phorward ' . PHORWARD_VERSION . "\n");
-  exit(0);
+// Installed as a dependency the autoloader is three levels up; in a checkout it is in vendor/.
+foreach ([__DIR__ . '/../../../autoload.php', __DIR__ . '/../vendor/autoload.php'] as $autoload) {
+  if (is_file($autoload)) {
+    require $autoload;
+    break;
+  }
+}
+if (!class_exists(\Phorward\Cli\Application::class)) {
+  fwrite(STDERR, "phorward: cannot find the Composer autoloader. Run \"composer install\".\n");
+  exit(2);
 }
 
-fwrite(STDOUT, "phorward " . PHORWARD_VERSION . "\n\n");
-fwrite(STDOUT, "No client commands are implemented yet. See README.md for the server tools.\n");
-exit($command === 'help' || $command === '--help' || $command === '-h' ? 0 : 2);
+$app = new \Phorward\Cli\Application(\Phorward\Config\Schema::standard(), \Phorward\Cli\Output::standard());
+exit($app->run(array_slice($argv, 1), getenv(), getcwd() ?: '.'));
