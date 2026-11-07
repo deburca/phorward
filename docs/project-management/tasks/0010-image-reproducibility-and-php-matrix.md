@@ -32,7 +32,7 @@ New in this repo (found while closing [[0001-pinned-php-validation-image]]). The
 - Reading `docker history` found one layer problem, the late `chmod -R` (above); no other layer was larger than the content it adds.
 - Bugs found by the new tests before they cost anything: a helper that forwarded one argument instead of all (so `--lines` was lost and `--pin-base` would have tried to pull a tag named `["8.3",`), and a heredoc that replaced a pipe (ShellCheck caught it).
 - Open question for the owner: how often to refresh. Suggested: when a new Drupal 11.x or a tool release matters, or at least before each release; `phorward doctor` already shows a stale image per project, but nothing yet compares an image's locks with the profile's current ones.
-- Left on the first server, for the owner to delete: `~/verify-0010/`, `~/verify-0010.sh` and its log and pid files (`~/verify-0010.log`, `~/verify-0010.pid`, `~/v83.pid`, `~/locks.log`, `~/locks.pid`), and the images built for the checks, which are tagged `phorward:smoke_module-php8.4`, `-php8.5`, `phorward:hivelog-php8.4` (the 8.3 images were rebuilt in place). `server/images prune --keep 1 --apply` would remove the old 5 November dated tags.
+- The scratch files left on the first server by the verification (`~/verify-0010/`, `~/verify-0010.sh` and its log and pid files) were deleted on 2026-11-07 with the owner's approval. The images built for the checks (`phorward:smoke_module-php8.4` and `-php8.5`, `phorward:hivelog-php8.4`) were kept; `server/images prune --keep 1 --apply` would remove the old 5 November dated tags.
 
 ## Related
 - Project:: [[first-public-release]]
