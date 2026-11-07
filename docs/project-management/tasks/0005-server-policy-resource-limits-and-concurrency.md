@@ -30,6 +30,7 @@ Origin: domus task 0148 (the generic half; the first server's own values and its
 - `server/parity-check` already runs shards concurrently, which is a useful load generator for the verification.
 
 ## Pending updates
+- Already in `phorward-run` (task 0002): the policy file with defaults (`POLICY_DEFAULTS`; unknown keys and invalid values are refused), clamping with requested versus applied recorded, `flock` slots with a wait then exit 75, `--cpu-shares`, tmpfs temp dirs, results pruned by count. Still open here: documenting the policy, results pruning by age, `phorward doctor`, and the hostile-sample test (fork bomb, CPU spin) with the cap saturated.
 - The first deployment (a homelab server running Home Assistant and Nextcloud) needs its own policy values chosen and the hostile-sample test run there; tracked in the domus repo.
 - Decide whether the results directory belongs in a host's backups or is disposable (host-side decision).
 

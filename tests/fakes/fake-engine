@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""A stand-in for docker/podman, driven by environment variables, for tests/test_phorward_run.py.
+
+FAKE_STATE     directory: every call is appended to calls.jsonl; containers/<name>.json marks a live container
+FAKE_IMAGES    newline-separated image references `images` prints (default: one drupal-module image)
+FAKE_BEHAVIOR  JSON {check: {"rc": int, "output": str, "repeat": int, "sleep": seconds, "oom": bool}}
+               keyed by the check name at the end of the container name (phorward-<run>-<check>)
+"""
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+state = Path(os.environ["FAKE_STATE"])
+(state / "containers").mkdir(parents=True, exist_ok=True)
+args = sys.argv[1:]
+with open(state / "calls.jsonl", "a") as log:
+    log.write(json.dumps(args) + "\n")
+
+DEFAULT_IMAGES = "phorward:smoke-php8.3\nphorward:smoke-php8.3-20261105\n<none>:<none>"
+MODULE_PATH = "/opt/drupal-project/web/modules/contrib/smoke"
+behavior = json.loads(os.environ.get("FAKE_BEHAVIOR", "{}"))
+
+
+def option(name):
+    return args[args.index(name) + 1] if name in args else None
+
+
+cmd = args[0] if args else ""
+if cmd == "--version":
+    print(os.environ.get("FAKE_VERSION", "Docker version 29.0.0, build fake"))
+elif cmd == "info":
+    print("[name=rootless]" if "podman" not in os.environ.get("FAKE_VERSION", "") else "true")
+elif cmd == "images":
+    print(os.environ.get("FAKE_IMAGES", DEFAULT_IMAGES))
+elif cmd == "image" and args[1] == "inspect":
+    tag = args[-1]
+    labels = {"phorward.profile": "drupal-module", "phorward.module-name": "smoke",
+              "phorward.module-path": MODULE_PATH}
+    print(json.dumps(labels) + "|2026-11-05T12:00:00Z")
+elif cmd == "run":
+    if args[-3:] == ["cat", "/opt/TOOL-VERSIONS"] or args[-2:] == ["cat", "/opt/TOOL-VERSIONS"]:
+        print("php=8.3.36\nphpcs=4.0.4\nphpstan=2.3.5\nphpunit=11.5.57")
+        sys.exit(0)
+    name = option("--name")
+    check = name.rsplit("-", 1)[-1]
+    spec = behavior.get(check, {})
+    (state / "containers" / f"{name}.json").write_text(json.dumps({"oom": bool(spec.get("oom"))}))
+    out = spec.get("output", "")
+    for _ in range(spec.get("repeat", 1)):
+        sys.stdout.write(out)
+    sys.stdout.flush()
+    waited = 0.0
+    while waited < spec.get("sleep", 0):
+        if (state / "containers" / f"{name}.killed").exists():
+            sys.exit(137)
+        time.sleep(0.05)
+        waited += 0.05
+    sys.exit(spec.get("rc", 0))
+elif cmd == "inspect":
+    record = state / "containers" / f"{args[-1]}.json"
+    if not record.exists():
+        sys.exit(1)
+    print("true" if json.loads(record.read_text())["oom"] else "false")
+elif cmd == "kill":
+    (state / "containers" / f"{args[-1]}.killed").write_text("")
+elif cmd == "rm":
+    for name in (state / "containers").glob(f"{args[-1]}.*"):
+        name.unlink()
+elif cmd == "ps":
+    for record in (state / "containers").glob("*.json"):
+        print(record.stem)
+else:
+    sys.exit(f"fake-engine: unsupported call {args}")

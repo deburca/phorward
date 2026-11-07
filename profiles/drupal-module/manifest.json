@@ -1,0 +1,52 @@
+{
+  "profile": "drupal-module",
+  "defaults": {
+    "php": "8.3",
+    "cpus": 2,
+    "pids": 512,
+    "memory": {"mariadb": "6g", "sqlite": "4g", "none": "4g"},
+    "db": "mariadb"
+  },
+  "tmpfs": [
+    "/tmp:exec,size=1g",
+    "/opt/drupal-project/web/sites/simpletest:mode=1777,size=1g"
+  ],
+  "env": {
+    "SIMPLETEST_BASE_URL": "http://localhost"
+  },
+  "databases": {
+    "mariadb": {"wrap": ["with-mariadb"]},
+    "sqlite": {"env": {"SIMPLETEST_DB": "sqlite://localhost//tmp/test.sqlite"}},
+    "none": {}
+  },
+  "checks": {
+    "lint": {
+      "workdir": "{module_path}",
+      "argv": [
+        "sh", "-c",
+        "out=$(find . \\( -name '*.php' -o -name '*.module' -o -name '*.inc' -o -name '*.install' -o -name '*.theme' -o -name '*.profile' \\) -not -path './vendor/*' -not -path './node_modules/*' -print0 | xargs -0 -n1 php -l 2>&1); rc=$?; printf '%s\\n' \"$out\" | grep -v '^No syntax errors detected'; exit $rc"
+      ]
+    },
+    "phpcs": {
+      "workdir": "{module_path}",
+      "argv": ["phpcs", "--warning-severity=0"]
+    },
+    "phpstan": {
+      "workdir": "{module_path}",
+      "argv": [
+        "sh", "-c",
+        "if [ -f phpstan.neon ] || [ -f phpstan.neon.dist ]; then phpstan analyse --no-progress --no-ansi --memory-limit=1G; else phpstan analyse --no-progress --no-ansi --memory-limit=1G .; fi"
+      ]
+    },
+    "phpunit": {
+      "workdir": "/opt/drupal-project",
+      "uses_db": true,
+      "argv": [
+        "sh", "-c",
+        "find \"$1\" \\( -path '*/tests/src/Unit/*Test.php' -o -path '*/tests/src/Kernel/*Test.php' \\) -not -path '*/vendor/*' -print0 | sort -z | xargs -0 phpunit -c web/core --no-progress",
+        "sh", "{module_path}"
+      ],
+      "argv_tests": ["phpunit", "-c", "web/core", "--no-progress", "{tests}"]
+    }
+  }
+}

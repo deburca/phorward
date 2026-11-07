@@ -1,0 +1,779 @@
+#!/usr/bin/env python3
+"""phorward-run: the SSH forced command of a phorward server. Implements docs/protocol.md, version 1.
+
+    phorward-run run  --protocol 1 [--checks lint,phpcs,...] [--db mariadb] ...   < tree.tar   > result.json
+    phorward-run info --protocol 1                                                              > info.json
+
+The request is SSH_ORIGINAL_COMMAND when sshd sets it (a leading `phorward-run` word is allowed), otherwise
+argv, so the same file works as a forced command and from a shell. stdout carries exactly one JSON document;
+stderr is for humans. No client string reaches a shell: every value is matched against a fixed pattern and
+handed to the container engine as a separate argument.
+
+Policy comes from PHORWARD_POLICY or /etc/phorward/policy.json (see POLICY_DEFAULTS for every key). The
+container engine is PHORWARD_ENGINE, else `podman` or `docker`, whichever is installed.
+"""
+import fcntl
+import json
+import os
+import posixpath
+import re
+import secrets
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+PROTOCOL = 1
+KIT_VERSION = "0.1.0"
+KIT_DIR = Path(__file__).resolve().parent.parent
+
+EXIT_PASSED, EXIT_FAILED, EXIT_REFUSED, EXIT_INFRA, EXIT_BUSY = 0, 1, 2, 70, 75
+
+CHECK_ORDER = ("lint", "phpcs", "phpstan", "phpunit")
+DB_CHOICES = ("mariadb", "sqlite", "none")
+
+POLICY_DEFAULTS = {
+    "max_memory": "6g",
+    "max_cpus": 2,
+    "max_pids": 1024,
+    "default_timeout": 900,
+    "max_timeout": 900,
+    "slots": 2,
+    "slot_wait": 30,
+    "cpu_shares": 256,
+    "allowed_profiles": ["drupal-module"],
+    "allowed_php": None,           # None: any installed version
+    "max_output_bytes": 200000,    # kept per check (the tail)
+    "max_archive_files": 100000,
+    "max_archive_file_bytes": 64 * 1024 * 1024,
+    "max_archive_bytes": 512 * 1024 * 1024,
+    "results_dir": "/var/lib/phorward/results",
+    "results_keep": 200,
+    "lock_dir": None,              # None: $XDG_RUNTIME_DIR or the temp dir
+    "tmp_dir": None,               # None: /dev/shm when usable, else the temp dir
+}
+
+# Whole request string, then per option. Anything else is refused before parsing.
+REQUEST_RE = re.compile(r"^[A-Za-z0-9_./:,=@+-]+( [A-Za-z0-9_./:,=@+-]+)*$")
+SIZE_RE = re.compile(r"^([0-9]{1,6})([kmg])$")
+VALUE_RES = {
+    "--protocol": re.compile(r"^[0-9]{1,4}$"),
+    "--profile": re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$"),
+    "--module": re.compile(r"^[a-z][a-z0-9_]{0,60}$"),
+    "--php": re.compile(r"^[0-9]{1,2}\.[0-9]{1,2}$"),
+    "--checks": re.compile(r"^[a-z]+(,[a-z]+)*$"),
+    "--db": re.compile(r"^[a-z]+$"),
+    "--tests": re.compile(r"^[A-Za-z0-9_./-]+(,[A-Za-z0-9_./-]+)*$"),
+    "--memory": SIZE_RE,
+    "--cpus": re.compile(r"^[0-9]{1,2}(\.[0-9]{1,2})?$"),
+    "--pids": re.compile(r"^[0-9]{1,6}$"),
+    "--timeout": re.compile(r"^[0-9]{1,6}$"),
+}
+RUN_OPTIONS = set(VALUE_RES)
+INFO_OPTIONS = {"--protocol"}
+
+TAG_RE = re.compile(r"^phorward:([A-Za-z0-9_.-]+)-php([0-9]+\.[0-9]+)$")
+
+
+class Refused(Exception):
+    """The request cannot be honoured (exit 2)."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code, self.message = code, message
+
+
+class Infra(Exception):
+    """The run could not give a verdict (exit 70, or 75 for `busy`)."""
+
+    def __init__(self, code, message, exit_code=EXIT_INFRA):
+        super().__init__(message)
+        self.code, self.message, self.exit_code = code, message, exit_code
+
+
+class Cancelled(Exception):
+    """SIGHUP, SIGTERM or SIGINT arrived: the client went away or the operator stopped the run."""
+
+
+def log(message):
+    try:
+        print(f"phorward-run: {message}", file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        # The client (and so stderr) is already gone; keep the flush at interpreter exit from failing too.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stderr.fileno())
+        except (OSError, ValueError):
+            pass
+
+
+def client_gone():
+    """True when nothing reads our stdout any more: sshd closed it because the client disconnected."""
+    try:
+        poller = select.poll()
+        poller.register(1, select.POLLOUT)
+        return any(ev & (select.POLLERR | select.POLLHUP | select.POLLNVAL) for _, ev in poller.poll(0))
+    except (OSError, ValueError):
+        return True
+
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+# --- policy -----------------------------------------------------------------------------------------------
+
+def parse_size(text):
+    m = SIZE_RE.match(str(text).lower())
+    if not m:
+        raise ValueError(f"bad size: {text!r}")
+    return int(m.group(1)) * {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[m.group(2)]
+
+
+def format_size(nbytes):
+    for unit, factor in (("g", 1024 ** 3), ("m", 1024 ** 2), ("k", 1024)):
+        if nbytes % factor == 0:
+            return f"{nbytes // factor}{unit}"
+    return f"{max(nbytes // 1024, 1)}k"
+
+
+def load_policy():
+    path = Path(os.environ.get("PHORWARD_POLICY", "/etc/phorward/policy.json"))
+    policy = dict(POLICY_DEFAULTS)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+            if not isinstance(data, dict):
+                raise ValueError("top level must be an object")
+        except (OSError, ValueError) as exc:
+            raise Infra("policy_invalid", f"cannot read policy {path}: {exc}")
+        unknown = sorted(set(data) - set(POLICY_DEFAULTS))
+        if unknown:
+            raise Infra("policy_invalid", f"unknown policy keys in {path}: {', '.join(unknown)}")
+        policy.update(data)
+    try:
+        parse_size(policy["max_memory"])
+        for key in ("max_cpus", "max_pids", "default_timeout", "max_timeout", "slots", "slot_wait",
+                    "cpu_shares", "max_output_bytes", "max_archive_files", "max_archive_file_bytes",
+                    "max_archive_bytes", "results_keep"):
+            if not isinstance(policy[key], (int, float)) or policy[key] < 0:
+                raise ValueError(f"{key} must be a non-negative number")
+        if policy["slots"] < 1:
+            raise ValueError("slots must be at least 1")
+    except ValueError as exc:
+        raise Infra("policy_invalid", f"invalid policy: {exc}")
+    return policy
+
+
+# --- request ----------------------------------------------------------------------------------------------
+
+def raw_request(argv):
+    original = os.environ.get("SSH_ORIGINAL_COMMAND")
+    text = original if original is not None else " ".join(argv)
+    words = text.split(" ")
+    if words and words[0] == "phorward-run":
+        words = words[1:]
+    return " ".join(words)
+
+
+def parse_request(text):
+    if not REQUEST_RE.match(text):
+        raise Refused("bad_request", "request is empty or contains characters outside the allowed set")
+    words = text.split(" ")
+    sub, rest = words[0], words[1:]
+    if sub not in ("run", "info"):
+        raise Refused("bad_request", f"unknown subcommand: {sub}")
+    allowed = RUN_OPTIONS if sub == "run" else INFO_OPTIONS
+    options = {}
+    if len(rest) % 2:
+        raise Refused("bad_request", "options must be --name value pairs")
+    for name, value in zip(rest[0::2], rest[1::2]):
+        if name not in allowed:
+            raise Refused("bad_request", f"unknown option for {sub}: {name}")
+        if name in options:
+            raise Refused("bad_request", f"option given twice: {name}")
+        if not VALUE_RES[name].match(value):
+            raise Refused("bad_request", f"bad value for {name}")
+        options[name] = value
+    if "--protocol" not in options:
+        raise Refused("bad_request", "--protocol is required")
+    return sub, options
+
+
+def check_protocol(options):
+    if int(options["--protocol"]) != PROTOCOL:
+        raise Refused("protocol_mismatch", f"server speaks protocol {PROTOCOL}, request asked for "
+                      f"{options['--protocol']}")
+
+
+def validate_tests(value):
+    paths = value.split(",")
+    for p in paths:
+        parts = p.split("/")
+        if p.startswith("/") or ".." in parts or "" in parts or p.startswith("-"):
+            raise Refused("bad_request", f"unsafe test path: {p}")
+    return paths
+
+
+# --- container engine -------------------------------------------------------------------------------------
+
+def find_engine():
+    chosen = os.environ.get("PHORWARD_ENGINE")
+    if chosen:
+        return chosen
+    for name in ("podman", "docker"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise Infra("no_engine", "neither podman nor docker is installed")
+
+
+def engine_out(engine, *args, timeout=30, quiet=False):
+    """Run an engine command; returns (rc, stdout, stderr). `quiet` is for cleanup: failures give rc 127."""
+    try:
+        done = subprocess.run([engine, *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if quiet:
+            return 127, "", str(exc)
+        raise Infra("engine_failed", f"{os.path.basename(engine)} {args[0] if args else ''} failed: {exc}")
+    return done.returncode, done.stdout, done.stderr
+
+
+def list_images(engine):
+    """Installed phorward images: [{profile, php, tag, module_name, module_path, built}]."""
+    rc, out, err = engine_out(engine, "images", "--format", "{{.Repository}}:{{.Tag}}")
+    if rc != 0:
+        raise Infra("engine_failed", f"cannot list images: {err.strip()[:200]}")
+    images = []
+    for tag in sorted({t.removeprefix("localhost/") for t in out.split()}):
+        m = TAG_RE.match(tag)
+        if not m:
+            continue
+        rc, out2, _ = engine_out(engine, "image", "inspect", "-f", "{{json .Config.Labels}}|{{.Created}}", tag)
+        if rc != 0:
+            continue
+        labels_json, _, created = out2.strip().partition("|")
+        try:
+            labels = json.loads(labels_json) or {}
+        except ValueError:
+            continue
+        if not labels.get("phorward.profile"):
+            continue
+        images.append({"profile": labels["phorward.profile"], "php": m.group(2), "tag": tag,
+                       "module_name": labels.get("phorward.module-name", m.group(1)),
+                       "module_path": labels.get("phorward.module-path", ""),
+                       "built": created[:10]})
+    return images
+
+
+def choose_image(engine, policy, profile, php, module=None):
+    """The installed image for (profile, php), or a Refused saying why there is none."""
+    if php is not None and policy["allowed_php"] is not None and php not in policy["allowed_php"]:
+        raise Refused("php_not_allowed", f"PHP version not allowed by policy: {php}")
+    candidates = [i for i in list_images(engine) if i["profile"] == profile and i["php"] == php
+                  and (module is None or i["module_name"] == module)]
+    if not candidates:
+        raise Refused("no_image", f"no installed image for profile {profile} with PHP {php}"
+                      + (f" and module {module}" if module else ""))
+    if len(candidates) > 1:
+        raise Refused("ambiguous_image", "several images match (" + ", ".join(i["tag"] for i in candidates)
+                      + "); say which with --module")
+    return candidates[0]
+
+
+def load_manifest(profile):
+    path = KIT_DIR / "profiles" / profile / "manifest.json"
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise Infra("manifest_invalid", f"cannot read profile manifest {path}: {exc}")
+
+
+# --- limits -----------------------------------------------------------------------------------------------
+
+def resolve_limits(options, policy, manifest, db):
+    defaults = manifest["defaults"]
+    requested = {
+        "memory": options.get("--memory") or defaults["memory"][db],
+        "cpus": float(options["--cpus"]) if "--cpus" in options else defaults["cpus"],
+        "pids": int(options["--pids"]) if "--pids" in options else defaults["pids"],
+        "timeout": int(options["--timeout"]) if "--timeout" in options else policy["default_timeout"],
+    }
+    mem = parse_size(requested["memory"])
+    applied = {
+        "memory": format_size(min(mem, parse_size(policy["max_memory"]))),
+        "cpus": min(requested["cpus"], policy["max_cpus"]),
+        "pids": min(requested["pids"], policy["max_pids"]),
+        "timeout": min(requested["timeout"], policy["max_timeout"]),
+    }
+    for d in (requested, applied):
+        if float(d["cpus"]).is_integer():
+            d["cpus"] = int(d["cpus"])
+    requested["memory"] = format_size(mem)
+    if applied["timeout"] < 1:
+        raise Refused("bad_request", "timeout must be at least 1 second")
+    clamped = [k for k in ("memory", "cpus", "pids", "timeout") if applied[k] != requested[k]]
+    return {"requested": requested, "applied": applied, "clamped": clamped}
+
+
+# --- archive ----------------------------------------------------------------------------------------------
+
+def safe_member_path(name):
+    if not name or "\x00" in name or name.startswith("/"):
+        raise Refused("bad_archive", f"unsafe path in archive: {name!r}")
+    parts = [p for p in name.split("/") if p not in ("", ".")]
+    if ".." in parts:
+        raise Refused("bad_archive", f"unsafe path in archive: {name!r}")
+    return parts
+
+
+def extract_tree(stream, root, policy):
+    """Stream a tar from `stream` into `root`, refusing anything outside protocol.md's rules."""
+    files = total = 0
+    try:
+        tar = tarfile.open(fileobj=stream, mode="r|")
+        for member in tar:
+            parts = safe_member_path(member.name)
+            if not parts:
+                continue
+            dest = Path(root, *parts)
+            # No component of the path so far may be a symlink: a file is never written through one.
+            probe = Path(root)
+            for part in parts[:-1]:
+                probe = probe / part
+                if probe.is_symlink():
+                    raise Refused("bad_archive", f"path goes through a symlink: {member.name}")
+            files += 1
+            if files > policy["max_archive_files"]:
+                raise Refused("bad_archive", "too many files in archive")
+            if member.isdir():
+                dest.mkdir(parents=True, exist_ok=True)
+                os.chmod(dest, 0o755)
+            elif member.isreg():
+                if member.size > policy["max_archive_file_bytes"]:
+                    raise Refused("bad_archive", f"file over the size limit: {member.name}")
+                total += member.size
+                if total > policy["max_archive_bytes"]:
+                    raise Refused("bad_archive", "archive over the total size limit")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                src = tar.extractfile(member)
+                fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                os.chmod(dest, 0o755 if member.mode & 0o111 else 0o644)
+            elif member.issym():
+                target = member.linkname
+                if not target or target.startswith("/") or ".." in target.split("/") or "\x00" in target:
+                    raise Refused("bad_archive", f"symlink target not allowed: {member.name} -> {target}")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.symlink(target, dest)
+            elif member.islnk():
+                tparts = safe_member_path(member.linkname)
+                source = Path(root, *tparts)
+                if not tparts or source.is_symlink() or not source.is_file():
+                    raise Refused("bad_archive", f"hard link target not allowed: {member.name}")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.link(source, dest)
+            else:
+                raise Refused("bad_archive", f"unsupported member type: {member.name}")
+    except (tarfile.TarError, EOFError, OSError) as exc:
+        if isinstance(exc, FileExistsError):
+            raise Refused("bad_archive", f"duplicate path in archive: {exc.filename}")
+        raise Refused("bad_archive", f"cannot read archive: {exc}")
+    if files == 0:
+        raise Refused("bad_archive", "archive is empty")
+    os.chmod(root, 0o755)
+
+
+# --- running checks ---------------------------------------------------------------------------------------
+
+class Run:
+    def __init__(self, engine, policy, manifest, image, db, limits, run_id, deadline):
+        self.engine, self.policy, self.manifest = engine, policy, manifest
+        self.image, self.db, self.limits = image, db, limits
+        self.run_id, self.deadline = run_id, deadline
+        self.tree = None
+        self.counter = 0
+
+    def remaining(self):
+        return self.deadline - time.monotonic()
+
+    def sandbox_args(self, name, workdir, env):
+        L = self.limits["applied"]
+        args = ["run", "--name", name, "--label", f"phorward.run={self.run_id}",
+                "--network", "none", "--read-only", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges",
+                "--pids-limit", str(L["pids"]), "--memory", L["memory"], "--cpus", str(L["cpus"]),
+                "--cpu-shares", str(int(self.policy["cpu_shares"]))]
+        for spec in self.manifest.get("tmpfs", []):
+            args += ["--tmpfs", spec]
+        mount = self.image["module_path"]
+        args += ["-v", f"{self.tree}:{mount}:ro", "-w", workdir]
+        for key, value in env.items():
+            args += ["-e", f"{key}={value}"]
+        return args
+
+    def build_env(self, check):
+        env = dict(self.manifest.get("env", {}))
+        if check.get("uses_db"):
+            env.update(self.manifest["databases"][self.db].get("env", {}))
+        return env
+
+    def build_argv(self, check, tests):
+        module_path = self.image["module_path"]
+        if tests and "argv_tests" in check:
+            argv = []
+            for item in check["argv_tests"]:
+                if item == "{tests}":
+                    argv += [f"{module_path}/{t}" for t in tests]
+                else:
+                    argv.append(item.replace("{module_path}", module_path))
+        else:
+            argv = [a.replace("{module_path}", module_path) for a in check["argv"]]
+        if check.get("uses_db"):
+            argv = list(self.manifest["databases"][self.db].get("wrap", [])) + argv
+        return argv
+
+    def run_check(self, name, tests):
+        check = self.manifest["checks"][name]
+        self.counter += 1
+        cname = f"phorward-{self.run_id}-{name}"
+        workdir = check["workdir"].replace("{module_path}", self.image["module_path"])
+        cmd = [self.engine] + self.sandbox_args(cname, workdir, self.build_env(check)) \
+            + [self.image["tag"]] + self.build_argv(check, tests)
+        started = time.monotonic()
+        result = {"name": name}
+        keep = int(self.policy["max_output_bytes"])
+        tail, total = bytearray(), 0
+        timed_out = False
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            fd = proc.stdout.fileno()
+            while True:
+                if client_gone():
+                    raise Cancelled("client disconnected")
+                left = self.remaining()
+                if left <= 0:
+                    timed_out = True
+                    break
+                ready, _, _ = select.select([fd], [], [], min(left, 1.0))
+                if ready:
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    tail += chunk
+                    if len(tail) > keep:
+                        del tail[:len(tail) - keep]
+            if timed_out:
+                self.kill(cname)
+            rc = proc.wait(timeout=30) if not timed_out else None
+            if timed_out:
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            oom = self.oom_killed(cname)
+        except OSError as exc:
+            raise Infra("engine_failed", f"cannot start container: {exc}")
+        finally:
+            self.remove(cname)
+        result["duration_ms"] = int((time.monotonic() - started) * 1000)
+        result["output"] = bytes(tail).decode("utf-8", errors="replace")
+        result["output_truncated"] = total > keep
+        result["output_bytes"] = total
+        if timed_out:
+            result.update(status="error", reason="timeout")
+            return result, "timeout"
+        result["exit_code"] = rc
+        if oom:
+            result.update(status="error", reason="oom_killed")
+            return result, "oom_killed"
+        if rc == 0:
+            result["status"] = "passed"
+        elif rc in (125, 126, 127):
+            # The engine or the command inside could not start: the check never ran.
+            result.update(status="error", reason="container_failed")
+            return result, "container_failed"
+        elif rc in (137, 143):
+            result.update(status="error", reason="killed")
+            return result, "killed"
+        else:
+            result["status"] = "failed"
+        return result, None
+
+    def oom_killed(self, cname):
+        rc, out, _ = engine_out(self.engine, "inspect", "-f", "{{.State.OOMKilled}}", cname, quiet=True)
+        return rc == 0 and out.strip().lower() == "true"
+
+    def kill(self, cname):
+        engine_out(self.engine, "kill", cname, quiet=True)
+
+    def remove(self, cname):
+        engine_out(self.engine, "rm", "-f", cname, quiet=True)
+
+    def cleanup_all(self):
+        rc, out, _ = engine_out(self.engine, "ps", "-aq", "--filter", f"label=phorward.run={self.run_id}",
+                              quiet=True)
+        for cid in out.split() if rc == 0 else []:
+            engine_out(self.engine, "rm", "-f", cid, quiet=True)
+
+    def tool_versions(self):
+        cmd = [self.engine, "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL",
+               "--security-opt", "no-new-privileges", "--label", f"phorward.run={self.run_id}",
+               self.image["tag"], "cat", "/opt/TOOL-VERSIONS"]
+        try:
+            done = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return {}
+        versions = {}
+        for line in done.stdout.splitlines():
+            key, sep, value = line.partition("=")
+            if sep and re.match(r"^[A-Za-z0-9_.-]+$", key):
+                versions[key] = value
+        return versions
+
+
+# --- results ----------------------------------------------------------------------------------------------
+
+def new_run_id():
+    return now_utc().strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
+
+
+def emit(result):
+    try:
+        sys.stdout.write(json.dumps(result, indent=2) + "\n")
+        sys.stdout.flush()
+    except (BrokenPipeError, ValueError):
+        # The reader is gone. Point stdout at /dev/null so the flush at interpreter exit cannot fail too.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except (OSError, ValueError):
+            pass
+
+
+def store_result(policy, result):
+    directory = Path(policy["results_dir"])
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o750)
+        path = directory / f"{result['run_id']}.json"
+        path.write_text(json.dumps(result, indent=2) + "\n")
+        keep = int(policy["results_keep"])
+        if keep > 0:
+            old = sorted(directory.glob("*.json"))[:-keep]
+            for p in old:
+                p.unlink(missing_ok=True)
+    except OSError as exc:
+        log(f"cannot store result: {exc}")
+
+
+def error_result(run_id, started, code, message, exit_code, extra=None):
+    result = {
+        "protocol": PROTOCOL, "kit_version": KIT_VERSION, "run_id": run_id, "verdict": "error",
+        "exit_code": exit_code, "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "duration_ms": 0, "checks": [], "error": {"code": code, "message": message},
+    }
+    result.update(extra or {})
+    return result
+
+
+# --- slots ------------------------------------------------------------------------------------------------
+
+def lock_dir(policy):
+    base = policy["lock_dir"] or os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(),
+                                              f"phorward-locks-{os.getuid()}")
+    os.makedirs(base, mode=0o700, exist_ok=True)
+    return base
+
+
+def acquire_slot(policy, deadline):
+    directory = lock_dir(policy)
+    handles = [open(os.path.join(directory, f"slot-{i}.lock"), "a") for i in range(int(policy["slots"]))]
+    while True:
+        for h in handles:
+            try:
+                fcntl.flock(h, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                for other in handles:
+                    if other is not h:
+                        other.close()
+                return h
+            except OSError:
+                continue
+        if client_gone():
+            for h in handles:
+                h.close()
+            raise Cancelled("client disconnected")
+        if time.monotonic() >= deadline:
+            for h in handles:
+                h.close()
+            raise Infra("busy", "no run slot became free in time; retry later", EXIT_BUSY)
+        time.sleep(0.25)
+
+
+# --- commands ---------------------------------------------------------------------------------------------
+
+def archive_timeout(_signum, _frame):
+    raise Infra("timeout", "timed out reading the archive")
+
+
+def do_run(options, policy):
+    started = now_utc()
+    t0 = time.monotonic()
+    run_id = new_run_id()
+    engine = find_engine()
+    profile = options.get("--profile") or policy["allowed_profiles"][0]
+    if profile not in policy["allowed_profiles"]:
+        raise Refused("profile_not_allowed", f"profile not allowed by policy: {profile}")
+
+    checks = list(CHECK_ORDER)
+    if "--checks" in options:
+        asked = options["--checks"].split(",")
+        bad = [c for c in asked if c not in CHECK_ORDER]
+        if bad:
+            raise Refused("bad_request", f"unknown check: {bad[0]}")
+        checks = [c for c in CHECK_ORDER if c in asked]
+    db = options.get("--db") or "mariadb"
+    if db not in DB_CHOICES:
+        raise Refused("bad_request", f"unknown database: {db}")
+    tests = validate_tests(options["--tests"]) if "--tests" in options else None
+    if tests and "phpunit" not in checks:
+        raise Refused("bad_request", "--tests needs the phpunit check")
+
+    manifest = load_manifest(profile)
+    php = options.get("--php") or manifest["defaults"]["php"]
+    image = choose_image(engine, policy, profile, php, options.get("--module"))
+    limits = resolve_limits(options, policy, manifest, db)
+    deadline = t0 + limits["applied"]["timeout"]
+
+    if os.isatty(0):
+        raise Refused("bad_request", "stdin must be a tar archive, not a terminal")
+
+    slot = acquire_slot(policy, t0 + float(policy["slot_wait"]))
+    run = Run(engine, policy, manifest, image, db, limits, run_id, deadline)
+    tmp_base = policy["tmp_dir"] or ("/dev/shm" if os.access("/dev/shm", os.W_OK) else tempfile.gettempdir())
+    workdir = tempfile.mkdtemp(prefix="phorward-run-", dir=tmp_base)
+    try:
+        run.tree = os.path.join(workdir, "tree")
+        os.mkdir(run.tree)
+        # Extraction shares the run's wall clock: a client that stops sending cannot hold a slot forever.
+        signal.signal(signal.SIGALRM, archive_timeout)
+        signal.alarm(max(int(limits["applied"]["timeout"]), 1))
+        try:
+            extract_tree(sys.stdin.buffer, run.tree, policy)
+        finally:
+            signal.alarm(0)
+        for path in tests or []:
+            if not os.path.exists(os.path.join(run.tree, path)):
+                raise Refused("bad_request", f"test path not in the tree: {path}")
+        results, error = [], None
+        for name in checks:
+            if error:
+                results.append({"name": name, "status": "skipped", "reason": "earlier_error"})
+                continue
+            if run.remaining() <= 0:
+                results.append({"name": name, "status": "error", "reason": "timeout"})
+                error = "timeout"
+                continue
+            entry, error = run.run_check(name, tests)
+            results.append(entry)
+        tool_versions = run.tool_versions()
+    finally:
+        run.cleanup_all()
+        shutil.rmtree(workdir, ignore_errors=True)
+        slot.close()
+
+    if error:
+        verdict, exit_code = "error", EXIT_INFRA
+    elif any(c["status"] == "failed" for c in results):
+        verdict, exit_code = "failed", EXIT_FAILED
+    else:
+        verdict, exit_code = "passed", EXIT_PASSED
+    result = {
+        "protocol": PROTOCOL, "kit_version": KIT_VERSION, "run_id": run_id, "verdict": verdict,
+        "exit_code": exit_code, "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "duration_ms": int((time.monotonic() - t0) * 1000), "profile": profile, "image": image["tag"],
+        "tool_versions": tool_versions, "limits": limits, "db": db, "checks": results,
+    }
+    if error:
+        result["error"] = {"code": error, "message": {
+            "timeout": "the run exceeded its wall-clock limit",
+            "oom_killed": "a check was killed for exceeding its memory limit",
+            "container_failed": "a container could not run the check",
+            "killed": "a check was killed by a signal",
+        }.get(error, error)}
+    return result
+
+
+def do_info(policy):
+    engine = find_engine()
+    rc, out, _ = engine_out(engine, "--version")
+    version = re.search(r"([0-9]+\.[0-9]+(\.[0-9]+)?)", out)
+    name = "podman" if "podman" in os.path.basename(engine) or "podman" in out.lower() else "docker"
+    if name == "podman":
+        rc, rl, _ = engine_out(engine, "info", "--format", "{{.Host.Security.Rootless}}")
+    else:
+        rc, rl, _ = engine_out(engine, "info", "--format", "{{.SecurityOptions}}")
+        rl = "true" if "rootless" in rl else "false"
+    try:
+        mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError):
+        mem = 0
+    return {
+        "protocol": PROTOCOL, "kit_version": KIT_VERSION,
+        "engine": {"name": name, "version": version.group(1) if version else "unknown",
+                   "rootless": rl.strip().lower() == "true"},
+        "policy": {k: policy[k] for k in ("max_memory", "max_cpus", "max_pids", "max_timeout", "slots",
+                                          "allowed_profiles", "allowed_php", "results_keep")},
+        "images": [{k: i[k] for k in ("profile", "php", "tag", "module_name", "built")}
+                   for i in list_images(engine)],
+        "host": {"cpus": os.cpu_count() or 0, "memory_bytes": mem, "load_1m": round(os.getloadavg()[0], 2)},
+    }
+
+
+def main(argv):
+    started = now_utc()
+    run_id = new_run_id()
+
+    def cancel(signum, _frame):
+        raise Cancelled(signal.Signals(signum).name)
+
+    for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, cancel)
+
+    policy = dict(POLICY_DEFAULTS)
+    try:
+        policy = load_policy()
+        sub, options = parse_request(raw_request(argv))
+        check_protocol(options)
+        if sub == "info":
+            emit(do_info(policy))
+            return EXIT_PASSED
+        result = do_run(options, policy)
+        store_result(policy, result)
+        emit(result)
+        return result["exit_code"]
+    except Refused as exc:
+        log(f"refused: {exc.message}")
+        result = error_result(run_id, started, exc.code, exc.message, EXIT_REFUSED)
+    except Infra as exc:
+        log(f"infrastructure error: {exc.message}")
+        result = error_result(run_id, started, exc.code, exc.message, exc.exit_code)
+    except Cancelled as exc:
+        log(f"cancelled ({exc})")
+        result = error_result(run_id, started, "cancelled", f"run cancelled ({exc})", EXIT_INFRA)
+    except Exception as exc:  # never lose the JSON contract to a bug
+        log(f"internal error: {type(exc).__name__}: {exc}")
+        result = error_result(run_id, started, "internal_error", f"{type(exc).__name__}: {exc}", EXIT_INFRA)
+    store_result(policy, result)
+    emit(result)
+    return result["exit_code"]
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

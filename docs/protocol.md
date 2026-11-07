@@ -53,7 +53,8 @@ Options may appear in any order and at most once. Unknown options are refused, n
 |---|---|---|---|
 | `--protocol` | `1` | required | A different number is refused with `protocol_mismatch` |
 | `--profile` | profile name, e.g. `drupal-module` | server default | Must be allowed by policy |
-| `--php` | `8.3`, `8.5`, ... | profile default | Must be an installed image allowed by policy |
+| `--module` | module machine name, e.g. `hivelog` | none | Picks among images of the same profile and PHP version when a server holds several modules. Refused with `ambiguous_image` if more than one image matches and this is absent |
+| `--php` | `8.3`, `8.5`, ... | profile default (`8.3` for `drupal-module`) | Must be an installed image allowed by policy |
 | `--checks` | comma list from `lint`, `phpcs`, `phpstan`, `phpunit` | all four | Run in that order, whatever order is given |
 | `--db` | `mariadb`, `sqlite`, `none` | `mariadb` | Applies to `phpunit` |
 | `--tests` | comma list of paths relative to the module root | all | Only for `phpunit`. Each path must match `^[A-Za-z0-9_./-]+$`, contain no `..` and exist in the tree |
@@ -62,7 +63,7 @@ Options may appear in any order and at most once. Unknown options are refused, n
 | `--pids` | integer | profile default | Request; clamped to policy |
 | `--timeout` | seconds | policy default | Whole-run wall clock. Request; clamped to policy |
 
-The client chooses an image only by `--profile` and `--php`. It cannot name an arbitrary image tag. The
+The client chooses an image only by `--profile`, `--php` and `--module`. It cannot name an arbitrary image tag. The
 wrapper maps the pair to a tag it found installed, so a request can never reach an image the operator did
 not build and allow.
 
@@ -75,7 +76,9 @@ directory read-only into the container. Nothing else from the host is ever mount
 The wrapper refuses the whole archive (exit 2, `bad_archive`) if any member is any of:
 
 - an absolute path, or a path containing `..`;
-- a symlink or hard link whose target is absolute or leaves the root;
+- a symlink whose target is absolute or has a `..` component (stricter than "leaves the root", because a `..` can
+  escape through another symlink), or a hard link to anything but an already-extracted regular file;
+- a path that passes through a symlink, or a duplicate path;
 - a device, FIFO or other non-regular, non-directory member;
 - over the policy's per-file or total size limit, or the policy's file count limit.
 
@@ -155,7 +158,7 @@ when the machine ran out of resources.
 |---|---|
 | `name` | `lint`, `phpcs`, `phpstan` or `phpunit` |
 | `status` | `passed`, `failed`, `error` or `skipped` |
-| `exit_code` | The check command's exit status. *Optional*: absent when `skipped` or killed |
+| `exit_code` | The check command's exit status. Checks that fan out with `xargs` (`lint`, `phpunit`) report `xargs`'s status, 123 when any invocation failed. *Optional*: absent when `skipped` or killed |
 | `duration_ms` | *Optional*: absent when `skipped` |
 | `output`, `output_truncated`, `output_bytes` | Combined stdout and stderr of the check. When it exceeds the policy's cap, the **last** bytes are kept, because the failure summary is at the end; `output_bytes` is the full size. *Optional*: absent when `skipped` |
 | `reason` | *Optional*: why the check is `error` or `skipped`, e.g. `timeout`, `oom_killed`, `earlier_error` |

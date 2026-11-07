@@ -36,6 +36,14 @@ server/smoke-test --module ~/path/to/module
 server/parity-check --module ~/path/to/module --phases mariadb
 ```
 
+`phorward-run` is the SSH forced command that runs the checks (protocol in [docs/protocol.md](docs/protocol.md)).
+For a local trial, with a policy file or the defaults:
+
+```bash
+tar -C ~/path/to/module -cf - . | server/phorward-run run --protocol 1 --module mymodule --checks lint,phpcs
+server/phorward-run info --protocol 1
+```
+
 `build-image` reads the package name from the module's `composer.json` and the machine name from its
 single `*.info.yml`. The image records the mount path and name as labels (`phorward.module-path`,
 `phorward.module-name`), which the other tools read.
