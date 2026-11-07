@@ -1,8 +1,7 @@
 # Configuration, `doctor` and `server:install`
 
 **Status: agreed 2026-11-07.** The key names below are a compatibility promise from 0.1.0, so they are settled
-here and written down once. Implemented: the loader, `phorward config` and `phorward doctor`. Still to build:
-`server:install`.
+here and written down once. Implemented: the loader, `phorward config`, `phorward doctor` and `phorward server:install`.
 
 ## The model
 
@@ -52,8 +51,9 @@ files or run code from it.
 | `sync.include_vendor` | bool; `false` | Send `vendor/`. Normally not needed: the image carries the project's dependencies |
 | `limits.memory`, `limits.cpus`, `limits.pids`, `limits.timeout` | as the protocol's options; unset | What to ask the server for. The server's policy can lower these, never raise them |
 
-The tree is uploaded without `.git`, `vendor`, `node_modules`, `.env`, `.env.*`, `*.pem`, `*.key` and `id_*`
-unless a key above says otherwise. The secret patterns cannot be switched off.
+The tree is uploaded without `.git`, `vendor` and `node_modules` unless a key above says otherwise, and never with
+`.env`, `.env.*`, `*.pem`, `*.key` or the SSH private key names `id_rsa`, `id_dsa`, `id_ecdsa` and `id_ed25519`. The
+secret patterns cannot be switched off.
 
 A run's per-check arguments are **not** a key: the command line of each check belongs to the profile
 ([profiles.md](profiles.md)), and the protocol lets a client choose only which checks, which tests and which
@@ -132,33 +132,57 @@ filesystem.
 
 Installing is **not** done with the restricted runtime key; that key can only run `phorward-run`
 ([ssh-access.md](ssh-access.md)). `<admin-host>` is a normal SSH login of someone who may administer the server,
-and is separate from the `host` that runs use.
+and is separate from the `host` that runs use. The client ships the server kit (`server/` and `profiles/`), so
+the two are always the same release.
 
 Because the kit and the policy are root-owned and rootless images belong to the dedicated user, installing needs
 `sudo` on the server. So the command works as a **plan**:
 
-1. **Default: print the plan and change nothing.** It lists the exact commands it would run, in order, as a
-   script you can read and run yourself:
-   - copy `server/` and `profiles/` to `/opt/phorward` (root-owned);
-   - write `/etc/phorward/policy.json` if absent, with the documented small-box defaults; never overwrite one;
-   - as the dedicated user, build the requested profile image (`build-image`, needs network) and run `smoke-test`;
-   - print the `authorized_keys` line for `--public-key FILE` using `server/authorized-key`, and the
-     `sshd_config` block from [ssh-access.md](ssh-access.md).
-2. **`--apply`: run that plan over `ssh <admin-host>`** with `sudo -n`. If sudo would need a password it stops
-   before changing anything and says so, rather than prompting through a pipe.
+1. **Default: print the plan and change nothing.** It does not even connect. It lists, in order, the exact scripts
+   it would run over `ssh <admin-host>`, what each is sent on standard input, the `authorized_keys` line for
+   `--public-key FILE`, and the `sshd_config` block from [ssh-access.md](ssh-access.md), so you can read them or run
+   them yourself.
+2. **`--apply`: run the same steps over ssh** with `sudo -n`. If sudo would need a password, the first step
+   (a check that changes nothing) fails and the command stops with "Nothing was changed", rather than prompting
+   through a pipe. A later failure stops there; earlier steps are safe to repeat.
+
+The steps:
+
+| Step | What it does |
+|---|---|
+| Check the server | `sudo -n` works, the dedicated user exists, `tar`, `python3` (and `rsync` unless the smoke test is skipped) and an engine are present, and the prefix is not a real directory |
+| Install the kit | Unpacks into `<prefix>.d/<release>` (the release id is a hash of the kit's content, so a repeat is a no-op) and switches the link `<prefix>` to it with one atomic rename. Previous releases are left in place |
+| Policy and results | Writes a minimal `policy.json` (`allowed_profiles` and `results_dir`, so every other limit follows the kit's documented defaults) **only if there is none**; an existing policy is never touched, and a note says if it does not list the profile. Creates the results directory for the dedicated user |
+| Build the image | Sends the project (without `.git`, `vendor`, `node_modules` or secret-looking files, honouring `sync.exclude`) to a temporary directory owned by the dedicated user, runs `build-image` and then `smoke-test` there as that user, and removes that temporary directory. Needs the network on the server |
 
 It never creates the user, edits `sshd_config` or `authorized_keys`, or touches the Docker group; those stay the
-operator's decisions, with the guide to follow. It is safe to re-run: files are replaced atomically, and the
-policy is left alone.
+operator's decisions, with the guide to follow.
 
-Needs: `ssh`, `tar` on the client; `sudo`, `tar`, a container engine and `python3` on the server. Network on the
-server only for the image build.
+| Option | Default | Meaning |
+|---|---|---|
+| `--apply` | off | Run the plan instead of printing it |
+| `--public-key FILE` | none | The runtime client's `.pub` file; its `authorized_keys` line is printed (validated like `server/authorized-key`) |
+| `--from PATTERN` | none | Added to that line as `from="..."` |
+| `--prefix PATH` | `/opt/phorward` | Where the kit is linked |
+| `--user NAME` | `phorward` | The dedicated user (runs the build, owns the results directory) |
+| `--policy-file PATH` | `/etc/phorward/policy.json` | Where the policy lives; a non-default path is also put in the forced command |
+| `--results-dir PATH` | `/var/lib/phorward/results` | Where results are kept |
+| `--no-sudo` | sudo is used | The login is the dedicated user and owns the paths; for a personal server |
+| `--skip-build` | off | Install the kit and policy only |
+| `--skip-smoke` | off | Build the image but do not smoke-test it |
+
+The settings `profile`, `php`, `module` and `dev_packages` come from the project's configuration or the usual flags.
+Every path and name is validated and shell-quoted before it reaches a script. Exit status: `0` done (or planned),
+`2` a usage or configuration error, `70` a step failed.
+
+Needs: `ssh` and `tar` on the client; on the server `sudo`, `tar`, `python3`, a container engine and, for the
+smoke test, `rsync`.
 
 ## What is built, in order
 
 1. The config loader, its validation and `phorward config` (no network, fully testable offline).
 2. `doctor`, with the two additive `info` fields.
-3. `server:install`.
+3. `server:install` (done).
 4. Verified from a clean state on the first server and on a second SSH host (a throwaway Linux container or VM),
    so nothing is specific to either.
 

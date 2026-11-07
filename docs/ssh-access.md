@@ -120,6 +120,9 @@ restrict,command="env PHORWARD_POLICY=/etc/phorward/policy.json /opt/phorward/se
 | `from="…"` | Optional: only accept the key from these addresses. Cheap, and worth it when the client has a stable address or VPN range |
 | `env NAME=VALUE` | The forced command is a shell command line, so this is how to point the wrapper at a policy or an engine without a wrapper script |
 
+`phorward server:install <admin-host>` prints this line (give it `--public-key`) together with the `sshd_config` block
+below, after installing the kit.
+
 Install it **outside the user's reach** and enforce the same limits in `sshd_config`, so one mistake in either
 place is not enough:
 

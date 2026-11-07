@@ -6,9 +6,12 @@ namespace Phorward\Cli;
 
 use Phorward\Command\ConfigCommand;
 use Phorward\Command\DoctorCommand;
+use Phorward\Command\ServerInstallCommand;
 use Phorward\Config\ConfigException;
 use Phorward\Config\ConfigLoader;
 use Phorward\Config\Schema;
+use Phorward\Install\InstallPlanner;
+use Phorward\Install\TreeArchiver;
 use Phorward\Project\ProfileCatalog;
 use Phorward\Ssh\SshTransport;
 
@@ -29,6 +32,7 @@ final class Application {
   private const COMMANDS = [
     'config' => 'Print the resolved configuration and where each value came from',
     'doctor' => 'Check the connection, the server and the image, and say how to fix what is wrong',
+    'server:install' => 'Install or update the server side (prints a plan; --apply runs it over ssh)',
   ];
 
   /** @var \Closure(string, int): \Phorward\Ssh\Transport */
@@ -82,6 +86,17 @@ final class Application {
           $this->catalog ?? ProfileCatalog::bundled(), $this->output);
         return $doctor->run($parsed['positional'], $parsed['options'], $env, $cwd);
       }
+      if ($command === 'server:install') {
+        $parsed = ArgParser::parse($rest, ['help', 'apply', 'skip-build', 'skip-smoke']);
+        if (isset($parsed['options']['help'])) {
+          $this->help();
+          return self::EXIT_OK;
+        }
+        $catalog = $this->catalog ?? ProfileCatalog::bundled();
+        $install = new ServerInstallCommand(new ConfigLoader($this->schema), $this->transportFactory,
+          new InstallPlanner($catalog, new TreeArchiver(), dirname(__DIR__, 2)), $this->output);
+        return $install->run($parsed['positional'], $parsed['options'], $env, $cwd);
+      }
       $this->output->error("Unknown command \"$command\". Run \"phorward help\".");
       return self::EXIT_USAGE;
     }
@@ -98,7 +113,7 @@ final class Application {
     $this->output->line();
     $this->output->line('Commands:');
     foreach (self::COMMANDS as $name => $description) {
-      $this->output->line(sprintf('  %-10s %s', $name, $description));
+      $this->output->line(sprintf('  %-15s %s', $name, $description));
     }
     $this->output->line();
     $this->output->line('Settings can be given as flags (for example --host), as PHORWARD_* environment variables,');
