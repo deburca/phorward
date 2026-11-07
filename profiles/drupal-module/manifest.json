@@ -152,5 +152,79 @@
     "readonly_paths": [
       "/opt/drupal-project/web/core"
     ]
+  },
+  "verify": {
+    "source_extensions": [
+      "php",
+      "module",
+      "install",
+      "inc",
+      "theme",
+      "profile"
+    ],
+    "scan_extensions": [
+      "php",
+      "module",
+      "install",
+      "inc",
+      "theme",
+      "profile",
+      "yml",
+      "twig"
+    ],
+    "security": {
+      "fail": [
+        {
+          "pattern": "\\beval\\s*\\(",
+          "message": "eval()"
+        },
+        {
+          "pattern": "->query\\(\\s*[\\\"'][^\\\"']*(\\$\\w+|\\{\\$)",
+          "message": "SQL built by string interpolation: use placeholders"
+        },
+        {
+          "pattern": "\\bunserialize\\s*\\(",
+          "message": "unserialize(): use Json or pass allowed_classes => FALSE"
+        },
+        {
+          "pattern": "\\b(shell_exec|passthru|system|proc_open|popen)\\s*\\(",
+          "message": "shell execution"
+        },
+        {
+          "pattern": "_access:\\s*['\\\"]?TRUE['\\\"]?",
+          "message": "route open to everyone (_access: TRUE)"
+        },
+        {
+          "pattern": "\\$_(GET|POST|REQUEST|COOKIE)\\b",
+          "message": "superglobal: use the request object"
+        },
+        {
+          "pattern": "\\bmd5\\s*\\(|\\bsha1\\s*\\(",
+          "message": "weak hash: fine only for cache keys, never for secrets"
+        }
+      ],
+      "warn": [
+        {
+          "pattern": "accessCheck\\(\\s*FALSE\\s*\\)",
+          "message": "accessCheck(FALSE) skips entity access: needs a stated reason"
+        },
+        {
+          "pattern": "'#markup'\\s*=>\\s*\\$",
+          "message": "#markup from a variable: escape it or use #plain_text"
+        },
+        {
+          "pattern": "\\bXss::filter(Admin)?\\b|\\bMarkup::create\\(",
+          "message": "marks output as safe: check the input is trusted"
+        },
+        {
+          "pattern": "\\\\Drupal::(database|entityTypeManager|currentUser)\\(\\)",
+          "message": "static service call in a class: inject the service"
+        },
+        {
+          "pattern": "\\bFilterAdmin\\b|\\|raw\\b",
+          "message": "raw output in a template"
+        }
+      ]
+    }
   }
 }

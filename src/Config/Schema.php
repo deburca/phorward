@@ -10,6 +10,9 @@ namespace Phorward\Config;
  */
 final class Schema {
 
+  /** The gates of "phorward verify", in the order they are reported. */
+  public const GATES = ['changes', 'syntax', 'phpcs', 'phpstan', 'phpunit', 'tests', 'security'];
+
   /** @var array<string, Setting> */
   private array $settings = [];
 
@@ -40,6 +43,19 @@ final class Schema {
     $schema->add(new Setting('limits.pids', Scope::Project, Type::Int, 'Processes to ask for; the server may lower it', NULL, NULL, NULL, 1, 1000000));
     $schema->add(new Setting('limits.timeout', Scope::Project, Type::Int, 'Wall-clock seconds to ask for; the server may lower it',
       NULL, NULL, NULL, 1, 86400));
+
+    // The verify command's gates.
+    $schema->add(new Setting('gates.base', Scope::Project, Type::String, 'Git ref the changes are measured from; the default branch when unset',
+      NULL, NULL, '/^[A-Za-z0-9][A-Za-z0-9._\/~^@{}-]{0,200}$/', NULL, NULL, 'a branch, tag or commit'));
+    $schema->add(new Setting('gates.ignore', Scope::Project, Type::StringList, 'Path prefixes or globs the gates do not judge, in addition to vendor/ and the like',
+      [], NULL, '/^[^\x00-\x1f]{1,200}$/', NULL, NULL, 'a path or glob on one line'));
+    $schema->add(new Setting('gates.skip', Scope::Project, Type::StringList, 'Gates left out by default', [], self::GATES));
+    $schema->add(new Setting('gates.php.oldest', Scope::Project, Type::String, 'PHP for the syntax, phpcs and phpstan gates; the profile\'s oldest when unset',
+      NULL, NULL, '/^[0-9]{1,2}\.[0-9]{1,2}$/', NULL, NULL, 'a version such as 8.3'));
+    $schema->add(new Setting('gates.php.newest', Scope::Project, Type::String, 'PHP for the phpunit gate; the profile\'s newest when unset',
+      NULL, NULL, '/^[0-9]{1,2}\.[0-9]{1,2}$/', NULL, NULL, 'a version such as 8.5'));
+    $schema->add(new Setting('gates.phpunit.max_files', Scope::Project, Type::Int, 'Most test files the phpunit gate runs', 8, NULL, NULL, 1, 200));
+    $schema->add(new Setting('gates.allow_no_tests', Scope::Project, Type::Bool, 'Do not fail the tests gate when source changed without a test', FALSE));
 
     // User settings: one person's setup, never committed.
     $schema->add(new Setting('host', Scope::User, Type::String, 'The server: an SSH alias or user@host', NULL, NULL,

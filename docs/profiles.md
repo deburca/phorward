@@ -88,6 +88,7 @@ file into a new layer (a contract test enforces this).
 | `env` | Variables set in every check's container |
 | `checks.<name>` | `lint`, `phpcs`, `phpstan` or `phpunit`: `argv` (the command, never run through a shell with client text in it), `workdir`, and for phpunit `argv_tests` (used when tests are selected, where the word `{tests}` expands to the paths) and `tests_prefix` (what goes before each path; defaults to the mount path) |
 | `test_layout` | `drupal` or `flat`; which test directories `shard-tests.py` looks for |
+| `verify` | What `phorward verify` needs: `source_extensions` (files that count as source), `scan_extensions` (files the security scan reads), and `security.fail` / `security.warn`, lists of `{pattern, message}` regular expressions (PCRE, no delimiters) matched against added lines |
 | `smoke` | How `smoke-test` proves the image: `pick_tests` (patterns for the tests to run), `good_checks`, `bad` (a broken file to plant per check, from a template in the profile), `scratch` (tiny synthetic trees for checks that must hold whatever state the project is in), `readonly_paths` |
 
 `{module_path}` in a command or `workdir` expands to the label's mount path. Strings from the client reach a

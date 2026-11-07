@@ -50,6 +50,12 @@ files or run code from it.
 | `sync.exclude` | list of globs; empty | Paths left out of the uploaded tree, **in addition to** the built-in ones |
 | `sync.include_vendor` | bool; `false` | Send `vendor/`. Normally not needed: the image carries the project's dependencies |
 | `limits.memory`, `limits.cpus`, `limits.pids`, `limits.timeout` | as the protocol's options; unset | What to ask the server for. The server's policy can lower these, never raise them |
+| `gates.base` | git ref; the default branch | What `phorward verify` measures changes from ([verify.md](verify.md)) |
+| `gates.ignore` | list of path prefixes or globs; empty | Not judged by the gates, in addition to `vendor/`, `node_modules/`, `.git/`, `.harness/` and `.opencode/` |
+| `gates.skip` | list of gates; empty | Gates left out by default: `changes`, `syntax`, `phpcs`, `phpstan`, `phpunit`, `tests`, `security` |
+| `gates.php.oldest`, `gates.php.newest` | the profile's oldest and newest PHP | PHP for `syntax`, `phpcs` and `phpstan` (oldest), and for `phpunit` (newest) |
+| `gates.phpunit.max_files` | integer; `8` | Most test files the `phpunit` gate runs |
+| `gates.allow_no_tests` | bool; `false` | Do not fail the `tests` gate when source changed without a test |
 
 The tree is uploaded without `.git`, `vendor` and `node_modules` unless a key above says otherwise, and never with
 `.env`, `.env.*`, `*.pem`, `*.key` or the SSH private key names `id_rsa`, `id_dsa`, `id_ecdsa` and `id_ed25519`. The
@@ -87,7 +93,7 @@ variable is reported by `phorward config` but not fatal, since the server tools 
 
 Unknown keys in a file are an error naming the key and the nearest valid one. Types and values are checked
 (`php` must look like `8.3`, `checks` must be known checks, `database` must be one the profile offers). Further
-subsystems add their own keys the same way (the `phorward verify` task adds `gates`); each registers its keys
+subsystems add their own keys the same way (`phorward verify` adds `gates`, below); each registers its keys
 and scope, so there is one place that knows the whole set.
 
 ## Commands
@@ -98,7 +104,7 @@ and scope, so there is one place that knows the whole set.
 | `phorward doctor` | Check the connection and the server end to end (below) |
 | `phorward server:install <admin-host>` | Install or update the server side (below) |
 | `phorward run` | Send the project to the server and run its checks ([client.md](client.md)) |
-| later `phorward verify` | The harness gate runner (task 0012) |
+| `phorward verify` | The gate a change must pass before it is pushed ([verify.md](verify.md)) |
 
 Exit codes match the wrapper's, so a script sees one set whether the failure was local or remote: `0` passed,
 `1` a check failed, `2` configuration or usage error (nothing was sent), `70` infrastructure error (ssh failed,

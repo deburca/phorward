@@ -138,5 +138,43 @@
     "readonly_paths": [
       "/opt/vendor"
     ]
+  },
+  "verify": {
+    "source_extensions": [
+      "php"
+    ],
+    "scan_extensions": [
+      "php"
+    ],
+    "security": {
+      "fail": [
+        {
+          "pattern": "\\beval\\s*\\(",
+          "message": "eval()"
+        },
+        {
+          "pattern": "->query\\(\\s*[\\\"'][^\\\"']*(\\$\\w+|\\{\\$)",
+          "message": "SQL built by string interpolation: use placeholders"
+        }
+      ],
+      "warn": [
+        {
+          "pattern": "\\bunserialize\\s*\\(",
+          "message": "unserialize(): pass allowed_classes => false, or use JSON"
+        },
+        {
+          "pattern": "\\b(shell_exec|passthru|system|proc_open|popen)\\s*\\(",
+          "message": "shell execution: check every argument is escaped"
+        },
+        {
+          "pattern": "\\$_(GET|POST|REQUEST|COOKIE)\\b",
+          "message": "superglobal: read it once, at the edge"
+        },
+        {
+          "pattern": "\\bmd5\\s*\\(|\\bsha1\\s*\\(",
+          "message": "weak hash: fine only for cache keys, never for secrets"
+        }
+      ]
+    }
   }
 }

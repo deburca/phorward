@@ -254,8 +254,8 @@ Settled when the draft was reviewed (2026-11-07):
 4. **Plain tar on stdin.** The wrapper does not decompress client data. `ssh -C` covers slow links.
 5. **`--tests` is pattern-checked only.** The wrapper checks that a path is safe and exists in the tree;
    PHPUnit decides what counts as a test, so the wrapper carries no PHP naming rules.
-6. **Task 0012 (`phorward verify`) extends the protocol later, without a version bump.** Its gates need
-   more than the four whole-tree checks. Planned additive changes, to be specified when 0012 starts:
+6. **`phorward verify` (task 0012) runs on protocol 1 as it is**: its first slice sends ordinary `run` requests, one per
+   PHP version. Two further additive changes are planned for what it cannot do yet, without a version bump:
    - an optional `--paths` option to limit checks to changed files, validated like `--tests`;
    - an optional `patch` field in a check entry, for `phpcbf`, because the tree is mounted read-only and the
      result otherwise carries no files;

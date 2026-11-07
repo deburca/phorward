@@ -8,6 +8,7 @@ use Phorward\Command\ConfigCommand;
 use Phorward\Command\DoctorCommand;
 use Phorward\Command\RunCommand;
 use Phorward\Command\ServerInstallCommand;
+use Phorward\Command\VerifyCommand;
 use Phorward\Config\ConfigException;
 use Phorward\Config\ConfigLoader;
 use Phorward\Config\Schema;
@@ -33,6 +34,7 @@ final class Application {
   private const COMMANDS = [
     'config' => 'Print the resolved configuration and where each value came from',
     'run' => 'Send this project to the server and run its checks there',
+    'verify' => 'Run the gates a change must pass before it is pushed: lint, standards, static analysis, tests, security',
     'doctor' => 'Check the connection, the server and the image, and say how to fix what is wrong',
     'server:install' => 'Install or update the server side (prints a plan; --apply runs it over ssh)',
   ];
@@ -93,6 +95,16 @@ final class Application {
         }
         $run = new RunCommand(new ConfigLoader($this->schema), $this->transportFactory, new TreeArchiver(), $this->output, $this->sleep);
         return $run->run($parsed['positional'], $parsed['options'], $env, $cwd);
+      }
+      if ($command === 'verify') {
+        $parsed = ArgParser::parse($rest, ['help']);
+        if (isset($parsed['options']['help'])) {
+          $this->help();
+          return self::EXIT_OK;
+        }
+        $verify = new VerifyCommand(new ConfigLoader($this->schema), $this->transportFactory, $this->catalog ?? ProfileCatalog::bundled(),
+          new TreeArchiver(), $this->output, $this->sleep);
+        return $verify->run($parsed['positional'], $parsed['options'], $env, $cwd);
       }
       if ($command === 'doctor') {
         $parsed = ArgParser::parse($rest, ['help']);

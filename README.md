@@ -4,8 +4,8 @@ Offload PHP lint, phpcs, phpstan and phpunit runs to an SSH-reachable Linux serv
 in a throwaway, network-less, read-only, non-root container, so the machine you work on stays light and
 code you do not trust (for example model-generated code) never runs on it.
 
-**Status: early.** The server-side image and test tools work. The Composer client (`bin/phorward`),
-configuration, `doctor` and `server:install` are not written yet, and the package is not published.
+**Status: early.** The server-side image and test tools work, and the Composer client (`bin/phorward`) has
+`config`, `run`, `doctor`, `server:install` and `verify`. The package is not published yet.
 
 ## How it fits together
 
@@ -34,6 +34,8 @@ under test is mounted read-only at run time and never baked in.
 came from; the settings, their scopes and the layering rules are in [docs/configuration.md](docs/configuration.md).
 `phorward doctor` checks the connection, the server and the image end to end and says how to fix what it finds.
 `phorward server:install <admin-host>` prints, and with `--apply` runs, the steps that set up the server side.
+`phorward verify` is the gate a change must pass before it is pushed (lint, standards, static analysis, the tests that
+match the change, and a security scan of the added lines); see [docs/verify.md](docs/verify.md).
 `phorward run` sends the project to the server and reports; see [docs/client.md](docs/client.md) for composer `scripts`
 aliases, exit statuses and report formats.
 
