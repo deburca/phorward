@@ -9,3 +9,6 @@
 /CLAUDE.local.md
 __pycache__/
 .phpunit.result.cache
+# Logs of the pilot harness runs. They name machines and paths, so they are reviewed by hand before anything
+# of them is published (task 0012); they stay local.
+/examples/harness-pilot/results/
