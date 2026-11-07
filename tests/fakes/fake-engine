@@ -62,7 +62,13 @@ elif cmd == "inspect":
     record = state / "containers" / f"{args[-1]}.json"
     if not record.exists():
         sys.exit(1)
-    print("true" if json.loads(record.read_text())["oom"] else "false")
+    spec = behavior.get(args[-1].rsplit("-", 1)[-1], {})
+    seen = state / "containers" / f"{args[-1]}.inspected"
+    count = int(seen.read_text()) + 1 if seen.exists() else 1
+    seen.write_text(str(count))
+    # "oom_after": the flag only appears from the Nth inspect on (an engine that records it late)
+    late = spec.get("oom_after")
+    print("true" if json.loads(record.read_text())["oom"] and (late is None or count > late) else "false")
 elif cmd == "kill":
     (state / "containers" / f"{args[-1]}.killed").write_text("")
 elif cmd == "rm":

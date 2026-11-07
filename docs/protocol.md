@@ -211,8 +211,10 @@ report the connection failure rather than a code failure. The values 70 and 75 a
 }
 ```
 
-`policy` is the effective policy after defaults are applied. `phorward doctor` compares it with `host` and
-warns when the policy could exhaust the machine ([task 0005]). `info` takes no stdin and starts no
+`policy` is the effective policy after defaults are applied. `warnings` (a list of `{code, message}`, empty
+when the policy looks safe) is the server's own comparison of the policy with `host`: `memory_exceeds_host`,
+`memory_heavy`, `cpu_exceeds_host`, `cpu_heavy`, `no_priority` and `tmpfs_heavy`. `phorward doctor` prints them
+([task 0005]); clients ignore codes they do not know. `info` takes no stdin and starts no
 container.
 
 [task 0005]: project-management/tasks/0005-server-policy-resource-limits-and-concurrency.md

@@ -54,7 +54,8 @@ POLICY_DEFAULTS = {
     "max_archive_file_bytes": 64 * 1024 * 1024,
     "max_archive_bytes": 512 * 1024 * 1024,
     "results_dir": "/var/lib/phorward/results",
-    "results_keep": 200,
+    "results_keep": 200,           # newest results kept (0: no count limit)
+    "results_max_age_days": 30,    # results older than this are removed (0: no age limit)
     "lock_dir": None,              # None: $XDG_RUNTIME_DIR or the temp dir
     "tmp_dir": None,               # None: /dev/shm when usable, else the temp dir
 }
@@ -142,6 +143,45 @@ def format_size(nbytes):
     return f"{max(nbytes // 1024, 1)}k"
 
 
+def validate_policy(policy):
+    """Problems with a merged policy, as readable strings (empty when it is fine)."""
+    problems = []
+    try:
+        parse_size(policy["max_memory"])
+    except ValueError:
+        problems.append("max_memory must look like 512m or 6g")
+    numbers = ("max_cpus", "max_pids", "default_timeout", "max_timeout", "slots", "slot_wait", "cpu_shares",
+               "max_output_bytes", "max_archive_files", "max_archive_file_bytes", "max_archive_bytes",
+               "results_keep", "results_max_age_days")
+    for key in numbers:
+        v = policy[key]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+            problems.append(f"{key} must be a non-negative number")
+    for key in ("slots", "max_pids", "max_timeout", "default_timeout", "max_output_bytes"):
+        v = policy[key]
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v < 1:
+            problems.append(f"{key} must be at least 1")
+    if isinstance(policy["slots"], float) and not policy["slots"].is_integer():
+        problems.append("slots must be a whole number")
+    if isinstance(policy["max_cpus"], (int, float)) and not isinstance(policy["max_cpus"], bool) \
+            and policy["max_cpus"] <= 0:
+        problems.append("max_cpus must be greater than 0")
+    profiles = policy["allowed_profiles"]
+    if not isinstance(profiles, list) or not profiles or not all(isinstance(x, str) for x in profiles):
+        problems.append("allowed_profiles must be a non-empty list of profile names")
+    php = policy["allowed_php"]
+    if php is not None and (not isinstance(php, list) or not all(isinstance(x, str) for x in php)):
+        problems.append("allowed_php must be null or a list of versions such as [\"8.3\"]")
+    for key in ("results_dir", "lock_dir", "tmp_dir"):
+        v = policy[key]
+        if v is not None and (not isinstance(v, str) or not v.startswith("/")):
+            problems.append(f"{key} must be an absolute path" + (" or null" if key != "results_dir" else ""))
+    if isinstance(policy["default_timeout"], (int, float)) and isinstance(policy["max_timeout"], (int, float)) \
+            and policy["default_timeout"] > policy["max_timeout"]:
+        problems.append("default_timeout must not exceed max_timeout")
+    return problems
+
+
 def load_policy():
     path = Path(os.environ.get("PHORWARD_POLICY", "/etc/phorward/policy.json"))
     policy = dict(POLICY_DEFAULTS)
@@ -156,17 +196,9 @@ def load_policy():
         if unknown:
             raise Infra("policy_invalid", f"unknown policy keys in {path}: {', '.join(unknown)}")
         policy.update(data)
-    try:
-        parse_size(policy["max_memory"])
-        for key in ("max_cpus", "max_pids", "default_timeout", "max_timeout", "slots", "slot_wait",
-                    "cpu_shares", "max_output_bytes", "max_archive_files", "max_archive_file_bytes",
-                    "max_archive_bytes", "results_keep"):
-            if not isinstance(policy[key], (int, float)) or policy[key] < 0:
-                raise ValueError(f"{key} must be a non-negative number")
-        if policy["slots"] < 1:
-            raise ValueError("slots must be at least 1")
-    except ValueError as exc:
-        raise Infra("policy_invalid", f"invalid policy: {exc}")
+    problems = validate_policy(policy)
+    if problems:
+        raise Infra("policy_invalid", "invalid policy: " + "; ".join(problems))
     return policy
 
 
@@ -480,6 +512,14 @@ class Run:
                     proc.kill()
                     proc.wait()
             oom = self.oom_killed(cname)
+            if not oom and not timed_out and rc == 137:
+                # The engine records an OOM kill asynchronously (seen under rootless Podman when
+                # several runs compete): look again briefly before calling it a plain kill.
+                for _ in range(6):
+                    time.sleep(0.25)
+                    oom = self.oom_killed(cname)
+                    if oom:
+                        break
         except OSError as exc:
             raise Infra("engine_failed", f"cannot start container: {exc}")
         finally:
@@ -566,9 +606,14 @@ def store_result(policy, result):
         path.write_text(json.dumps(result, indent=2) + "\n")
         keep = int(policy["results_keep"])
         if keep > 0:
-            old = sorted(directory.glob("*.json"))[:-keep]
-            for p in old:
+            for p in sorted(directory.glob("*.json"))[:-keep]:
                 p.unlink(missing_ok=True)
+        max_age = float(policy["results_max_age_days"]) * 86400
+        if max_age > 0:
+            cutoff = time.time() - max_age
+            for p in directory.glob("*.json"):
+                if p.stat().st_mtime < cutoff:
+                    p.unlink(missing_ok=True)
     except OSError as exc:
         log(f"cannot store result: {exc}")
 
@@ -705,9 +750,44 @@ def do_run(options, policy):
             "timeout": "the run exceeded its wall-clock limit",
             "oom_killed": "a check was killed for exceeding its memory limit",
             "container_failed": "a container could not run the check",
-            "killed": "a check was killed by a signal",
+            "killed": "a check was killed by a signal, usually the out-of-memory killer",
         }.get(error, error)}
     return result
+
+
+def gib(nbytes):
+    return f"{nbytes / 1024 ** 3:.0f}g"
+
+
+def policy_warnings(policy, host):
+    """Ways the policy could hurt the host it runs on, as [{code, message}]; empty when it looks safe."""
+    warnings = []
+    slots = int(policy["slots"])
+    memory = parse_size(policy["max_memory"])
+    ram, cpus = host["memory_bytes"], host["cpus"]
+    if ram and slots * memory > ram:
+        warnings.append({"code": "memory_exceeds_host", "message":
+                         f"{slots} slot(s) x {policy['max_memory']} is more memory than the host has "
+                         f"({gib(ram)}); a full house would be killed or swap"})
+    elif ram and slots * memory > ram / 2:
+        warnings.append({"code": "memory_heavy", "message":
+                         f"{slots} slot(s) x {policy['max_memory']} is over half the host's memory "
+                         f"({gib(ram)}); other services may be squeezed"})
+    if cpus and slots * policy["max_cpus"] > cpus:
+        warnings.append({"code": "cpu_exceeds_host", "message":
+                         f"{slots} slot(s) x {policy['max_cpus']} CPUs is more than the host's {cpus}"})
+    elif cpus and slots * policy["max_cpus"] > cpus / 2:
+        warnings.append({"code": "cpu_heavy", "message":
+                         f"{slots} slot(s) x {policy['max_cpus']} CPUs is over half the host's {cpus}"})
+    if policy["cpu_shares"] >= 1024:
+        warnings.append({"code": "no_priority", "message":
+                         "cpu_shares is at or above the engine default (1024), so runs get no lower CPU "
+                         "priority than the host's other services"})
+    if ram and slots * policy["max_archive_bytes"] > ram / 8:
+        warnings.append({"code": "tmpfs_heavy", "message":
+                         f"{slots} slot(s) x {format_size(int(policy['max_archive_bytes']))} of unpacked tree "
+                         "could take over an eighth of the memory when tmp_dir is tmpfs"})
+    return warnings
 
 
 def do_info(policy):
@@ -724,15 +804,18 @@ def do_info(policy):
         mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     except (ValueError, OSError):
         mem = 0
+    host = {"cpus": os.cpu_count() or 0, "memory_bytes": mem, "load_1m": round(os.getloadavg()[0], 2)}
     return {
         "protocol": PROTOCOL, "kit_version": KIT_VERSION,
         "engine": {"name": name, "version": version.group(1) if version else "unknown",
                    "rootless": rl.strip().lower() == "true"},
         "policy": {k: policy[k] for k in ("max_memory", "max_cpus", "max_pids", "max_timeout", "slots",
-                                          "allowed_profiles", "allowed_php", "results_keep")},
+                                          "allowed_profiles", "allowed_php", "results_keep",
+                                          "results_max_age_days")},
         "images": [{k: i[k] for k in ("profile", "php", "tag", "module_name", "built")}
                    for i in list_images(engine)],
-        "host": {"cpus": os.cpu_count() or 0, "memory_bytes": mem, "load_1m": round(os.getloadavg()[0], 2)},
+        "host": host,
+        "warnings": policy_warnings(policy, host),
     }
 
 

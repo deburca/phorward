@@ -176,6 +176,16 @@ class RunTests(WrapperCase):
         self.assertEqual(result["checks"][-1]["reason"], "oom_killed")
         self.assert_clean()
 
+    def test_late_oom_flag_is_still_found(self):
+        self.behavior = {"phpunit": {"rc": 137, "oom": True, "oom_after": 2}}
+        rc, result, _ = self.run_wrapper("run --protocol 1 --checks phpunit")
+        self.assertEqual((rc, result["error"]["code"]), (70, "oom_killed"))
+
+    def test_kill_without_oom_flag_is_an_error_not_a_failure(self):
+        self.behavior = {"phpunit": {"rc": 137}}
+        rc, result, _ = self.run_wrapper("run --protocol 1 --checks phpunit")
+        self.assertEqual((rc, result["verdict"], result["error"]["code"]), (70, "error", "killed"))
+
     def test_command_that_cannot_start_is_not_a_failure(self):
         self.behavior = {"phpstan": {"rc": 127, "output": "exec: not found\n"}}
         rc, result, _ = self.run_wrapper("run --protocol 1")
@@ -363,6 +373,100 @@ class RefusalTests(WrapperCase):
         self.policy["max_memroy"] = "1g"
         rc, result, _ = self.run_wrapper("run --protocol 1")
         self.assertEqual((rc, result["error"]["code"]), (70, "policy_invalid"))
+
+
+class PolicyTests(WrapperCase):
+    def assert_policy_invalid(self, **change):
+        self.policy.update(change)
+        rc, result, _ = self.run_wrapper("run --protocol 1 --checks lint")
+        self.assertEqual((rc, result["error"]["code"]), (70, "policy_invalid"), change)
+        self.assertEqual(self.container_runs(), [])
+        return result["error"]["message"]
+
+    def test_invalid_values_are_rejected(self):
+        for change in [
+            {"slots": "two"}, {"slots": 0}, {"slots": 1.5}, {"slots": True},
+            {"max_memory": "lots"}, {"max_memory": 6},
+            {"max_cpus": 0}, {"max_pids": -1}, {"max_timeout": 0},
+            {"default_timeout": 1000},
+            {"allowed_profiles": []}, {"allowed_profiles": "drupal-module"}, {"allowed_profiles": [1]},
+            {"allowed_php": "8.3"}, {"allowed_php": [8.3]},
+            {"results_dir": "relative/dir"}, {"lock_dir": 5}, {"tmp_dir": "tmp"},
+            {"results_max_age_days": -1}, {"max_output_bytes": 0},
+        ]:
+            with self.subTest(change=change):
+                self.assert_policy_invalid(**change)
+
+    def test_message_names_the_problem(self):
+        self.assertIn("slots", self.assert_policy_invalid(slots=0))
+
+    def test_results_pruned_by_count(self):
+        self.policy["results_keep"] = 2
+        for _ in range(4):
+            self.run_wrapper("run --protocol 1 --checks lint")
+        self.assertEqual(len(list((self.base / "results").glob("*.json"))), 2)
+
+    def test_results_pruned_by_age(self):
+        old = self.base / "results" / "20200101T000000Z-aaaaaa.json"
+        fresh = self.base / "results" / "20260101T000000Z-bbbbbb.json"
+        for f in (old, fresh):
+            f.write_text("{}")
+        ancient = time.time() - 40 * 86400
+        os.utime(old, (ancient, ancient))
+        self.run_wrapper("run --protocol 1 --checks lint")
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.exists())
+
+    def test_age_limit_can_be_switched_off(self):
+        old = self.base / "results" / "20200101T000000Z-aaaaaa.json"
+        old.write_text("{}")
+        ancient = time.time() - 400 * 86400
+        os.utime(old, (ancient, ancient))
+        self.policy["results_max_age_days"] = 0
+        self.run_wrapper("run --protocol 1 --checks lint")
+        self.assertTrue(old.exists())
+
+    def test_one_free_slot_is_enough(self):
+        self.policy["slots"] = 2
+        held = open(self.base / "locks" / "slot-0.lock", "a")
+        fcntl.flock(held, fcntl.LOCK_EX)
+        self.addCleanup(held.close)
+        rc, result, _ = self.run_wrapper("run --protocol 1 --checks lint")
+        self.assertEqual(rc, 0)
+
+    def test_runs_beyond_the_slots_wait_their_turn(self):
+        self.policy["slots"] = 1
+        self.policy["slot_wait"] = 30
+        self.behavior = {"lint": {"sleep": 2}}
+        procs = [subprocess.Popen([sys.executable, "-I", str(WRAPPER), "run", "--protocol", "1", "--checks", "lint"],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  env=self.env()) for _ in range(2)]
+        started = time.monotonic()
+        for proc in procs:
+            proc.stdin.write(make_tar())
+            proc.stdin.close()
+        codes = [proc.wait(timeout=60) for proc in procs]
+        for proc in procs:
+            proc.stdout.close()
+            proc.stderr.close()
+        self.assertEqual(codes, [0, 0])
+        self.assertGreaterEqual(time.monotonic() - started, 3.5, "the two runs overlapped")
+
+    def test_info_warns_when_the_policy_outgrows_the_host(self):
+        rc, quiet, _ = self.run_wrapper("info --protocol 1", b"")
+        self.assertIsInstance(quiet["warnings"], list)
+        self.policy.update(slots=64, max_memory="64g", max_cpus=64, cpu_shares=1024)
+        rc, info, _ = self.run_wrapper("info --protocol 1", b"")
+        codes = {w["code"] for w in info["warnings"]}
+        self.assertTrue({"memory_exceeds_host", "cpu_exceeds_host", "no_priority"} <= codes, codes)
+        self.assertTrue(all(w["message"] for w in info["warnings"]))
+
+    def test_info_reports_the_effective_policy(self):
+        self.policy.update(max_memory="3g", slots=3, results_max_age_days=7)
+        rc, info, _ = self.run_wrapper("info --protocol 1", b"")
+        self.assertEqual((info["policy"]["max_memory"], info["policy"]["slots"],
+                          info["policy"]["results_max_age_days"]), ("3g", 3, 7))
+        self.assertEqual(info["policy"]["max_cpus"], 2, "defaults fill in what the file leaves out")
 
 
 class ArchiveTests(WrapperCase):

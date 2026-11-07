@@ -44,6 +44,9 @@ tar -C ~/path/to/module -cf - . | server/phorward-run run --protocol 1 --module 
 server/phorward-run info --protocol 1
 ```
 
+Limits are the server's, set in a policy file ([docs/policy.md](docs/policy.md)). After changing it, check it with
+`server/hostile-test`, which fills the run slots with hostile samples while timing the host's other services.
+
 `build-image` reads the package name from the module's `composer.json` and the machine name from its
 single `*.info.yml`. The image records the mount path and name as labels (`phorward.module-path`,
 `phorward.module-name`), which the other tools read.

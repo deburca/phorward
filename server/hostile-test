@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# Saturation test for a phorward server: fills every run slot with hostile samples (CPU spin, memory hog,
+# fork bomb) and checks that the host stays responsive, every run ends on its own, and nothing is left behind.
+#   hostile-test --module PATH --module-name NAME [--probe CMD]... [--timeout 30] [--memory 1g]
+#                [--max-load N] [--slack-ms 250] [--runs N]
+# --module       a checkout of the module the installed image was built for (its tree is the carrier)
+# --module-name  its Drupal machine name (the installed image is chosen with --module NAME)
+# --probe        a shell command that must keep succeeding quickly while the samples run, e.g.
+#                'curl -fsS -o /dev/null http://127.0.0.1:8123'. Repeatable. These are the other services on the host.
+# --timeout      wall clock for each hostile run, seconds (default 30)
+# --memory       memory requested by each run (default 1g; the policy may lower it)
+# --runs         hostile runs, started 1.5 s apart in the order spin, hog, fork bomb (default: slots + 1, so
+#                the last must wait for a slot or be refused as busy)
+# --max-load     abort and cancel everything if the 1-minute load average passes this (default: half the CPUs)
+# --slack-ms     allowed extra probe latency over the baseline median, in ms (default 250)
+# Uses PHORWARD_POLICY / PHORWARD_ENGINE like phorward-run. Exit 0 = every check below held.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RUN="$HERE/phorward-run"
+SAMPLES="$HERE/../tests/fixtures/hostile"
+MODULE="" NAME="" TIMEOUT=30 MEMORY=1g RUNS="" SLACK_MS=250
+MAX_LOAD="$(awk -v n="$(nproc)" 'BEGIN { print n / 2 }')"
+PROBES=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --module) MODULE="$2"; shift 2 ;;
+    --module-name) NAME="$2"; shift 2 ;;
+    --probe) PROBES+=("$2"); shift 2 ;;
+    --timeout) TIMEOUT="$2"; shift 2 ;;
+    --memory) MEMORY="$2"; shift 2 ;;
+    --runs) RUNS="$2"; shift 2 ;;
+    --max-load) MAX_LOAD="$2"; shift 2 ;;
+    --slack-ms) SLACK_MS="$2"; shift 2 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$MODULE" ] && [ -d "$MODULE" ] && [ -n "$NAME" ] || { echo "need --module PATH and --module-name NAME" >&2; exit 2; }
+[ "${#PROBES[@]}" -gt 0 ] || echo "warning: no --probe given, so host responsiveness is not measured (load only)" >&2
+
+ENGINE="${PHORWARD_ENGINE:-$(command -v podman || command -v docker)}"
+WORK="$(mktemp -d)"
+PIDS=()
+cancel_all() { for p in "${PIDS[@]}"; do kill -TERM "$p" 2>/dev/null; done; }
+trap 'cancel_all; wait 2>/dev/null; rm -rf "${WORK:?}"' EXIT
+trap 'echo "interrupted"; exit 130' INT TERM
+FAILS=0
+check() {   # check <ok|bad> <label> [detail]
+  if [ "$1" = ok ]; then echo "ok    $2${3:+ ($3)}"; else echo "FAIL  $2${3:+: $3}"; FAILS=$((FAILS + 1)); fi
+}
+
+now_ms() { python3 -I -c 'import time; print(int(time.time() * 1000))'; }
+probe_ms() {   # probe_ms <cmd>: milliseconds the command took, or -1 if it failed
+  local t0 t1
+  t0="$(now_ms)"
+  bash -c "$1" >/dev/null 2>&1 || { echo -1; return; }
+  t1="$(now_ms)"; echo $((t1 - t0))
+}
+median() { sort -n | awk '{ a[NR] = $1 } END { if (NR) print a[int((NR + 1) / 2)]; else print -1 }'; }
+
+pressure() {   # pressure: "<cpu %> <memory bytes> <pids>", the largest across the live phorward containers
+  local ids
+  ids="$("$ENGINE" ps -q --filter label=phorward.run 2>/dev/null)"
+  [ -n "$ids" ] || { echo "0 0 0"; return; }
+  # shellcheck disable=SC2086  # one argument per container id
+  "$ENGINE" stats --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}|{{.PIDs}}' $ids 2>/dev/null | python3 -I -c '
+import re, sys
+units = {"b": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "kib": 1024, "mib": 1024**2, "gib": 1024**3}
+cpu = mem = pids = 0
+for line in sys.stdin:
+    c, m, p = (line.strip().split("|") + ["", "", ""])[:3]
+    try:
+        cpu = max(cpu, float(c.rstrip("%")))
+        n, u = re.match(r"([0-9.]+)\s*([A-Za-z]+)", m.split("/")[0].strip()).groups()
+        mem = max(mem, float(n) * units[u.lower()])
+        pids = max(pids, int(p))
+    except (ValueError, AttributeError, KeyError):
+        pass
+print(f"{cpu:.0f} {mem:.0f} {pids}")
+'
+}
+
+INFO="$("$RUN" info --protocol 1)" || { echo "phorward-run info failed" >&2; exit 2; }
+SLOTS="$(python3 -I -c 'import json,sys; print(json.load(sys.stdin)["policy"]["slots"])' <<<"$INFO")"
+RUNS="${RUNS:-$((SLOTS + 1))}"
+echo "policy: $SLOTS slot(s); starting $RUNS hostile run(s) of ${TIMEOUT}s; abort if load1 > $MAX_LOAD"
+
+# Baseline: how fast the other services answer when the box is quiet.
+declare -a BASE
+for i in "${!PROBES[@]}"; do
+  vals=""
+  for _ in 1 2 3 4 5; do vals+="$(probe_ms "${PROBES[$i]}")"$'\n'; done
+  BASE[i]="$(printf '%s' "$vals" | median)"
+  [ "${BASE[$i]}" -ge 0 ] || { echo "probe does not succeed on a quiet host, fix it first: ${PROBES[$i]}" >&2; exit 2; }
+  echo "baseline: ${BASE[$i]} ms  ${PROBES[$i]}"
+done
+LOAD0="$(cut -d' ' -f1 /proc/loadavg)"
+
+# One carrier tree per hostile sample: the module plus that one test file.
+SAMPLE_FILES=("$SAMPLES"/SpinTest.php "$SAMPLES"/HogTest.php "$SAMPLES"/ForkBombTest.php)
+for n in $(seq 1 "$RUNS"); do
+  f="${SAMPLE_FILES[$(((n - 1) % ${#SAMPLE_FILES[@]}))]}"
+  base="$(basename "$f" .php)"
+  tree="$WORK/tree$n"
+  mkdir -p "$tree"
+  rsync -a --exclude=.git --exclude=vendor --exclude=node_modules "$MODULE/" "$tree/"
+  mkdir -p "$tree/tests/src/Unit"
+  sed "s/__NAME__/$NAME/g" "$f" > "$tree/tests/src/Unit/$base.php"
+  tar -C "$tree" -cf "$WORK/run$n.tar" .
+  echo "$base" > "$WORK/run$n.name"
+done
+
+START="$(date +%s)"
+for n in $(seq 1 "$RUNS"); do
+  base="$(cat "$WORK/run$n.name")"
+  "$RUN" run --protocol 1 --module "$NAME" --checks phpunit --db sqlite --tests "tests/src/Unit/$base.php" \
+    --timeout "$TIMEOUT" --memory "$MEMORY" < "$WORK/run$n.tar" > "$WORK/run$n.json" 2> "$WORK/run$n.err" &
+  PIDS+=("$!")
+  # Fixed order, so which samples hold the slots is not a race (slot polling is every 0.25 s).
+  sleep 1.5
+done
+
+# While they run: sample the probes and the load, and pull the plug if the host struggles.
+declare -a WORST
+for i in "${!PROBES[@]}"; do WORST[i]=0; done
+PEAK_LOAD=0 ABORTED=0 PEAK_CPU=0 PEAK_MEM=0 PEAK_PIDS=0
+while :; do
+  alive=0
+  for p in "${PIDS[@]}"; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done
+  [ "$alive" -gt 0 ] || break
+  load="$(cut -d' ' -f1 /proc/loadavg)"
+  PEAK_LOAD="$(awk -v a="$PEAK_LOAD" -v b="$load" 'BEGIN { print (b > a ? b : a) }')"
+  if awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l > m) }'; then
+    echo "load $load passed $MAX_LOAD: cancelling the hostile runs"; ABORTED=1; cancel_all; break
+  fi
+  read -r cpu mem pids <<<"$(pressure)"
+  [ "$cpu" -le "$PEAK_CPU" ] || PEAK_CPU="$cpu"
+  [ "$mem" -le "$PEAK_MEM" ] || PEAK_MEM="$mem"
+  [ "$pids" -le "$PEAK_PIDS" ] || PEAK_PIDS="$pids"
+  for i in "${!PROBES[@]}"; do
+    ms="$(probe_ms "${PROBES[$i]}")"
+    if [ "$ms" -lt 0 ]; then WORST[i]=999999; elif [ "$ms" -gt "${WORST[$i]}" ]; then WORST[i]="$ms"; fi
+  done
+  [ $(( $(date +%s) - START )) -lt $((TIMEOUT * 4 + 120)) ] || { echo "runs overran; cancelling"; ABORTED=1; cancel_all; break; }
+  sleep 2
+done
+wait 2>/dev/null
+ELAPSED=$(( $(date +%s) - START ))
+
+echo; echo "-- runs"
+for n in $(seq 1 "$RUNS"); do
+  base="$(cat "$WORK/run$n.name")"
+  summary="$(python3 -I - "$WORK/run$n.json" <<'PY'
+import json, sys
+try:
+    r = json.load(open(sys.argv[1]))
+except Exception as exc:
+    print(f"no JSON ({exc})"); sys.exit()
+print(f"verdict={r['verdict']} exit_code={r['exit_code']} error={r.get('error', {}).get('code', '-')}")
+PY
+)"
+  code="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["exit_code"])' "$WORK/run$n.json" 2>/dev/null || echo none)"
+  echo "run $n ($base): $summary"
+  case "$code" in
+    70|1|75) check ok "run $n ended with a clean verdict" "exit $code" ;;
+    *) check bad "run $n ended with a clean verdict" "$summary" ;;
+  esac
+done
+
+echo; echo "-- host"
+if [ "$ABORTED" = 0 ]; then
+  check ok "load stayed under $MAX_LOAD" "baseline ${LOAD0}, peak ${PEAK_LOAD}"
+else
+  check bad "load stayed under $MAX_LOAD" "peak ${PEAK_LOAD}; runs were cancelled"
+fi
+if [ "$ELAPSED" -le $((TIMEOUT * 4 + 60)) ]; then
+  check ok "every run ended on its own" "${ELAPSED}s in all"
+else
+  check bad "every run ended on its own" "${ELAPSED}s in all"
+fi
+for i in "${!PROBES[@]}"; do
+  limit=$((BASE[i] + SLACK_MS))
+  if [ "${WORST[$i]}" -le "$limit" ]; then
+    check ok "probe stayed responsive: ${PROBES[$i]}" "baseline ${BASE[$i]} ms, worst ${WORST[$i]} ms"
+  else
+    check bad "probe stayed responsive: ${PROBES[$i]}" "baseline ${BASE[$i]} ms, worst ${WORST[$i]} ms, limit $limit ms"
+  fi
+done
+
+echo; echo "-- the samples bit"
+# A pass means nothing if the hostile samples never pushed on their limits, so require evidence of each.
+MEM_BYTES="$(python3 -I -c 'import re,sys; n,u=re.match(r"(\d+)([kmg])",sys.argv[1]).groups(); print(int(n)*{"k":1024,"m":1024**2,"g":1024**3}[u])' "$MEMORY")"
+if [ "$PEAK_CPU" -ge 100 ]; then check ok "a run used its CPU allowance" "peak ${PEAK_CPU}% of one CPU"; else check bad "a run used its CPU allowance" "peak only ${PEAK_CPU}%"; fi
+if [ "$PEAK_MEM" -ge $((MEM_BYTES / 2)) ]; then check ok "a run pushed on its memory limit" "peak $((PEAK_MEM / 1048576)) MiB of $((MEM_BYTES / 1048576)) MiB"; else check bad "a run pushed on its memory limit" "peak only $((PEAK_MEM / 1048576)) MiB"; fi
+if [ "$PEAK_PIDS" -ge 256 ]; then check ok "a run pushed on its process limit" "peak $PEAK_PIDS processes"; else check bad "a run pushed on its process limit" "peak only $PEAK_PIDS processes"; fi
+
+echo; echo "-- leftovers"
+sleep 3
+left="$("$ENGINE" ps -aq --filter label=phorward.run 2>/dev/null | wc -l)"
+if [ "$left" -eq 0 ]; then check ok "no container left behind"; else check bad "no container left behind" "$left found"; fi
+tmpleft="$(find /dev/shm "${TMPDIR:-/tmp}" -maxdepth 1 -name 'phorward-run-*' 2>/dev/null | wc -l)"
+if [ "$tmpleft" -eq 0 ]; then check ok "no temp directory left behind"; else check bad "no temp directory left behind" "$tmpleft found"; fi
+procs="$(pgrep -fc 'phorward-run run' || true)"
+if [ "${procs:-0}" -eq 0 ]; then check ok "no wrapper process left behind"; else check bad "no wrapper process left behind" "$procs found"; fi
+
+echo; [ "$FAILS" -eq 0 ] && echo "hostile test: all checks held" || echo "hostile test: $FAILS check(s) FAILED"
+exit $((FAILS > 0))
