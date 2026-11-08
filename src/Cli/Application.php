@@ -25,7 +25,7 @@ use Phorward\Ssh\SshTransport;
  */
 final class Application {
 
-  public const VERSION = '0.0.0-dev';
+  public const VERSION = '0.1.0';
 
   public const EXIT_OK = 0;
   public const EXIT_FAILED = 1;
