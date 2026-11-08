@@ -55,9 +55,10 @@ Options may appear in any order and at most once. Unknown options are refused, n
 | `--profile` | profile name, e.g. `drupal-module` | server default | Must be allowed by policy |
 | `--module` | module machine name, e.g. `mymodule` | none | Picks among images of the same profile and PHP version when a server holds several modules. Refused with `ambiguous_image` if more than one image matches and this is absent |
 | `--php` | `8.3`, `8.5`, ... | profile default (`8.3` for `drupal-module`) | Must be an installed image allowed by policy |
-| `--checks` | comma list from `lint`, `phpcs`, `phpstan`, `phpunit` | all four | Run in that order, whatever order is given |
+| `--checks` | comma list from `lint`, `phpcbf`, `phpcs`, `phpstan`, `phpunit` | `lint`, `phpcs`, `phpstan`, `phpunit` | Run in that order (`phpcbf` after `lint`), whatever order is given. `phpcbf` is advisory and runs only when named, and needs `--paths` |
 | `--db` | `mariadb`, `sqlite`, `none` | `mariadb` | Applies to `phpunit` |
 | `--tests` | comma list of paths relative to the module root | all | Only for `phpunit`. Each path must match `^[A-Za-z0-9_./-]+$`, contain no `..` and exist in the tree |
+| `--paths` | comma list of file paths relative to the module root | whole project | Limits the checks that support it (`lint`, `phpcs`; the others ignore it and say so by omitting `scope`) to these files, and is what `phpcbf` fixes. Same character rules as `--tests`, no `.` or `..` parts, no duplicates, at most 500, each a regular file in the tree. *Added after the first release; see [versioning](#versioning)* |
 | `--memory` | size, e.g. `4g`, `6g` | profile default | Request; clamped to policy |
 | `--cpus` | number, e.g. `2` | profile default | Request; clamped to policy |
 | `--pids` | integer | profile default | Request; clamped to policy |
@@ -156,16 +157,23 @@ when the machine ran out of resources.
 
 | Field | Meaning |
 |---|---|
-| `name` | `lint`, `phpcs`, `phpstan` or `phpunit` |
+| `name` | `lint`, `phpcbf`, `phpcs`, `phpstan` or `phpunit` |
 | `status` | `passed`, `failed`, `error` or `skipped` |
 | `exit_code` | The check command's exit status. Checks that fan out with `xargs` (`lint`, `phpunit`) report `xargs`'s status, 123 when any invocation failed. *Optional*: absent when `skipped` or killed |
 | `duration_ms` | *Optional*: absent when `skipped` |
 | `output`, `output_truncated`, `output_bytes` | Combined stdout and stderr of the check. When it exceeds the policy's cap, the **last** bytes are kept, because the failure summary is at the end; `output_bytes` is the full size. *Optional*: absent when `skipped` |
 | `reason` | *Optional*: why the check is `error` or `skipped`, e.g. `timeout`, `oom_killed`, `earlier_error` |
+| `scope` | *Optional*: `paths` when `--paths` limited the check; absent when it looked at the whole project |
+| `patch`, `patch_bytes` | *Optional*, checks that return a patch (`phpcbf`): a unified diff, as text, from the originals (`a/<path>`) to the fixed files (`b/<path>`), and its size in bytes. Empty when there is nothing to fix. Standard output of such a check is the patch and standard error is its `output` |
+| `patch_dropped` | *Optional*: `too_large` (over the policy's `max_patch_bytes`) or `not_text`; the patch is then absent, never cut. The check itself still passed |
 
 Checks run sequentially in the fixed order lint, phpcs, phpstan, phpunit. A `failed` check does not stop the
 later ones, so one run reports every kind of problem. An `error` stops the run, and the remaining checks are
 `skipped` with reason `earlier_error`.
+
+`phpcbf` never makes a run fail: it passes when the tool ran, whatever it fixed. It works on copies in the container's
+temporary space and returns the changes as a patch, because the tree under test is read-only and the files belong to
+the client. A client must check that a patch touches only the files it asked about before applying it.
 
 The command line for each check comes from the profile's manifest, never from the request ([task 0007]).
 
@@ -203,6 +211,7 @@ report the connection failure rather than a code failure. The values 70 and 75 a
 {
   "protocol": 1,
   "kit_version": "0.1.0",
+  "features": ["paths", "patch"],
   "engine": {"name": "podman", "version": "5.7.0", "rootless": true},
   "policy": {"max_memory": "6g", "max_cpus": 2, "max_pids": 1024, "max_timeout": 900, "slots": 2},
   "images": [{"profile": "drupal-module", "php": "8.3", "tag": "phorward:mymodule-php8.3",
@@ -220,7 +229,9 @@ container.
 `lock_sha256` is the hash recorded in the image's `phorward.lock-sha256` label (empty for an image built before the
 label existed), which a client compares with the hash of the project's dependency file to see that an image is
 stale. `host.disk_free_bytes` is the free space on the filesystem holding the results directory. Both were added
-without a version bump; a client must treat them as optional when talking to an older server.
+without a version bump; a client must treat them as optional when talking to an older server. `features` lists the
+additions to protocol 1 that this server has (`paths`: the `--paths` option; `patch`: checks that return a patch);
+it is absent on a server that predates them.
 
 [task 0005]: project-management/tasks/0005-server-policy-resource-limits-and-concurrency.md
 
@@ -232,6 +243,10 @@ without a version bump; a client must treat them as optional when talking to an 
 - Within one protocol version, fields may be **added** to the result and to `info`; clients must ignore
   fields they do not know. Removing or renaming a field, changing a meaning, or adding a required option
   needs a new protocol version.
+- **Additions after 0.1.0.** The option `--paths` and the check `phpcbf` with its `patch` fields (task 0014) were added
+  to protocol 1 without a version bump: an old client never sends them, and a new client treats a server that
+  refuses them (`bad_request` naming `--paths` or `phpcbf`, or no `features` in `info`) as one that predates them and
+  falls back to checking the whole project without auto-fix.
 - The client and the kit ship from one repository and release together, so a mismatch normally means an
   out-of-date server install (`phorward server:install` fixes it).
 

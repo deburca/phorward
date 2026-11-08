@@ -1,5 +1,5 @@
 #!/bin/sh
-# phorward-check <phpcs|phpstan|phpunit> [paths...]: run one tool the way the project would. Prefers the
+# phorward-check <phpcs|phpcbf|phpstan|phpunit> [paths...]: run one tool the way the project would. Prefers the
 # project's own vendor/bin and its own configuration; falls back to the image's tools and to sensible
 # defaults (PSR-12, level 5, the tests directory) when the project has none. Run inside the project root.
 set -eu
@@ -10,9 +10,25 @@ src=""
 for d in src lib app; do [ -d "$d" ] && src="$src $d"; done
 has() { for f in "$@"; do [ -f "$f" ] && return 0; done; return 1; }
 case "$tool" in
-  phpcs)
+  phpcs|phpcbf)
+    if [ "$tool" = phpcbf ]; then
+      # Fix in place in the writable copy (with-project made it), then print what changed against the read-only
+      # tree as a unified diff on standard output; the tool's own output goes to standard error.
+      rc=0
+      if has phpcs.xml phpcs.xml.dist .phpcs.xml .phpcs.xml.dist; then
+        "$bin" --warning-severity=0 -- "$@" >&2 || rc=$?
+      else
+        "$bin" --standard=PSR12 --warning-severity=0 --extensions=php -- "$@" >&2 || rc=$?
+      fi
+      [ "$rc" -le 2 ] || exit "$rc"
+      for f in "$@"; do diff -u --label "a/$f" --label "b/$f" "${PHORWARD_TREE:-/project}/$f" "$f" || true; done
+      exit 0
+    fi
     if has phpcs.xml phpcs.xml.dist .phpcs.xml .phpcs.xml.dist; then
-      exec "$bin" --warning-severity=0
+      exec "$bin" --warning-severity=0 "$@"
+    fi
+    if [ "$#" -gt 0 ]; then
+      exec "$bin" --standard=PSR12 --warning-severity=0 --extensions=php -- "$@"
     fi
     dirs="$src"; [ -d tests ] && dirs="$dirs tests"
     [ -n "$dirs" ] || { echo "phorward-check: nothing to check (no src, lib, app or tests directory)" >&2; exit 2; }

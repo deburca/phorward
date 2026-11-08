@@ -35,7 +35,10 @@ KIT_DIR = Path(__file__).resolve().parent.parent
 
 EXIT_PASSED, EXIT_FAILED, EXIT_REFUSED, EXIT_INFRA, EXIT_BUSY = 0, 1, 2, 70, 75
 
-CHECK_ORDER = ("lint", "phpcs", "phpstan", "phpunit")
+CHECK_ORDER = ("lint", "phpcbf", "phpcs", "phpstan", "phpunit")
+MAX_PATHS = 500
+# Additions to protocol 1 beyond the original request: a client may look for these in `info` instead of trying.
+FEATURES = ["paths", "patch"]
 
 POLICY_DEFAULTS = {
     "max_memory": "6g",
@@ -49,6 +52,7 @@ POLICY_DEFAULTS = {
     "allowed_profiles": ["drupal-module"],
     "allowed_php": None,           # None: any installed version
     "max_output_bytes": 200000,    # kept per check (the tail)
+    "max_patch_bytes": 1048576,    # largest patch a check (phpcbf) may return
     "max_archive_files": 100000,
     "max_archive_file_bytes": 64 * 1024 * 1024,
     "max_archive_bytes": 512 * 1024 * 1024,
@@ -70,6 +74,7 @@ VALUE_RES = {
     "--checks": re.compile(r"^[a-z]+(,[a-z]+)*$"),
     "--db": re.compile(r"^[a-z]+$"),
     "--tests": re.compile(r"^[A-Za-z0-9_./-]+(,[A-Za-z0-9_./-]+)*$"),
+    "--paths": re.compile(r"^[A-Za-z0-9_./-]+(,[A-Za-z0-9_./-]+)*$"),
     "--memory": SIZE_RE,
     "--cpus": re.compile(r"^[0-9]{1,2}(\.[0-9]{1,2})?$"),
     "--pids": re.compile(r"^[0-9]{1,6}$"),
@@ -150,13 +155,13 @@ def validate_policy(policy):
     except ValueError:
         problems.append("max_memory must look like 512m or 6g")
     numbers = ("max_cpus", "max_pids", "default_timeout", "max_timeout", "slots", "slot_wait", "cpu_shares",
-               "max_output_bytes", "max_archive_files", "max_archive_file_bytes", "max_archive_bytes",
+               "max_output_bytes", "max_patch_bytes", "max_archive_files", "max_archive_file_bytes", "max_archive_bytes",
                "results_keep", "results_max_age_days")
     for key in numbers:
         v = policy[key]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
             problems.append(f"{key} must be a non-negative number")
-    for key in ("slots", "max_pids", "max_timeout", "default_timeout", "max_output_bytes"):
+    for key in ("slots", "max_pids", "max_timeout", "default_timeout", "max_output_bytes", "max_patch_bytes"):
         v = policy[key]
         if isinstance(v, (int, float)) and not isinstance(v, bool) and v < 1:
             problems.append(f"{key} must be at least 1")
@@ -248,6 +253,19 @@ def validate_tests(value):
         parts = p.split("/")
         if p.startswith("/") or ".." in parts or "" in parts or p.startswith("-"):
             raise Refused("bad_request", f"unsafe test path: {p}")
+    return paths
+
+
+def validate_paths(value):
+    paths = value.split(",")
+    if len(paths) > MAX_PATHS:
+        raise Refused("bad_request", f"--paths names {len(paths)} files; at most {MAX_PATHS}")
+    for p in paths:
+        parts = p.split("/")
+        if p.startswith("/") or ".." in parts or "" in parts or "." in parts or p.startswith("-"):
+            raise Refused("bad_request", f"unsafe path: {p}")
+    if len(set(paths)) != len(paths):
+        raise Refused("bad_request", "--paths names a file twice")
     return paths
 
 
@@ -456,9 +474,16 @@ class Run:
             env.update(self.manifest["databases"][self.db].get("env", {}))
         return env
 
-    def build_argv(self, check, tests):
+    def build_argv(self, check, tests, paths=None):
         module_path = self.image["module_path"]
-        if tests and "argv_tests" in check:
+        if paths and "argv_paths" in check:
+            argv = []
+            for item in check["argv_paths"]:
+                if item == "{paths}":
+                    argv += paths
+                else:
+                    argv.append(item.replace("{module_path}", module_path))
+        elif tests and "argv_tests" in check:
             argv = []
             for item in check["argv_tests"]:
                 if item == "{tests}":
@@ -472,33 +497,47 @@ class Run:
             argv = list(self.manifest["databases"][self.db].get("wrap", [])) + argv
         return argv
 
-    def run_check(self, name, tests):
+    def run_check(self, name, tests, paths=None):
         check = self.manifest["checks"][name]
         self.counter += 1
         cname = f"phorward-{self.run_id}-{name}"
         workdir = check["workdir"].replace("{module_path}", self.image["module_path"])
         cmd = [self.engine] + self.sandbox_args(cname, workdir, self.build_env(check)) \
-            + [self.image["tag"]] + self.build_argv(check, tests)
+            + [self.image["tag"]] + self.build_argv(check, tests, paths)
         started = time.monotonic()
         result = {"name": name}
+        if paths and "argv_paths" in check:
+            result["scope"] = "paths"
         keep = int(self.policy["max_output_bytes"])
         tail, total = bytearray(), 0
+        # A check that returns a patch keeps standard output apart: that is the patch, and standard error is the log.
+        patch_mode = bool(check.get("patch"))
+        patch_keep = int(self.policy["max_patch_bytes"])
+        patch, patch_total = bytearray(), 0
         timed_out = False
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            fd = proc.stdout.fileno()
-            while True:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE if patch_mode else subprocess.STDOUT)
+            streams = {proc.stdout.fileno(): "stdout"}
+            if patch_mode:
+                streams[proc.stderr.fileno()] = "stderr"
+            while streams:
                 if client_gone():
                     raise Cancelled("client disconnected")
                 left = self.remaining()
                 if left <= 0:
                     timed_out = True
                     break
-                ready, _, _ = select.select([fd], [], [], min(left, 1.0))
-                if ready:
+                ready, _, _ = select.select(list(streams), [], [], min(left, 1.0))
+                for fd in ready:
                     chunk = os.read(fd, 65536)
                     if not chunk:
-                        break
+                        del streams[fd]
+                        continue
+                    if patch_mode and streams[fd] == "stdout":
+                        patch_total += len(chunk)
+                        if len(patch) <= patch_keep:
+                            patch += chunk
+                        continue
                     total += len(chunk)
                     tail += chunk
                     if len(tail) > keep:
@@ -533,6 +572,15 @@ class Run:
             result.update(status="error", reason="timeout")
             return result, "timeout"
         result["exit_code"] = rc
+        if patch_mode:
+            result["patch_bytes"] = patch_total
+            if patch_total > patch_keep:
+                result["patch_dropped"] = "too_large"
+            else:
+                try:
+                    result["patch"] = bytes(patch).decode("utf-8")
+                except UnicodeDecodeError:
+                    result["patch_dropped"] = "not_text"
         if oom:
             result.update(status="error", reason="oom_killed")
             return result, "oom_killed"
@@ -679,7 +727,8 @@ def do_run(options, policy):
 
     manifest = load_manifest(profile)
     available = [c for c in CHECK_ORDER if c in manifest["checks"]]
-    checks = list(available)
+    # A check marked "default": false (phpcbf) runs only when it is named.
+    checks = [c for c in available if manifest["checks"][c].get("default", True)]
     if "--checks" in options:
         asked = options["--checks"].split(",")
         bad = [c for c in asked if c not in available]
@@ -693,6 +742,10 @@ def do_run(options, policy):
     tests = validate_tests(options["--tests"]) if "--tests" in options else None
     if tests and "phpunit" not in checks:
         raise Refused("bad_request", "--tests needs the phpunit check")
+    paths = validate_paths(options["--paths"]) if "--paths" in options else None
+    for name in checks:
+        if manifest["checks"][name].get("needs_paths") and not paths:
+            raise Refused("bad_request", f"the {name} check needs --paths")
 
     php = options.get("--php") or manifest["defaults"]["php"]
     image = choose_image(engine, policy, profile, php, options.get("--module"))
@@ -719,6 +772,9 @@ def do_run(options, policy):
         for path in tests or []:
             if not os.path.exists(os.path.join(run.tree, path)):
                 raise Refused("bad_request", f"test path not in the tree: {path}")
+        for path in paths or []:
+            if not os.path.isfile(os.path.join(run.tree, path)):
+                raise Refused("bad_request", f"path not a file in the tree: {path}")
         results, error = [], None
         for name in checks:
             if error:
@@ -728,7 +784,7 @@ def do_run(options, policy):
                 results.append({"name": name, "status": "error", "reason": "timeout"})
                 error = "timeout"
                 continue
-            entry, error = run.run_check(name, tests)
+            entry, error = run.run_check(name, tests, paths)
             results.append(entry)
         tool_versions = run.tool_versions()
     finally:
@@ -821,7 +877,7 @@ def do_info(policy):
     host = {"cpus": os.cpu_count() or 0, "memory_bytes": mem, "load_1m": round(os.getloadavg()[0], 2),
             "disk_free_bytes": free_bytes(policy["results_dir"])}
     return {
-        "protocol": PROTOCOL, "kit_version": KIT_VERSION,
+        "protocol": PROTOCOL, "kit_version": KIT_VERSION, "features": FEATURES,
         "engine": {"name": name, "version": version.group(1) if version else "unknown",
                    "rootless": rl.strip().lower() == "true"},
         "policy": {k: policy[k] for k in ("max_memory", "max_cpus", "max_pids", "max_timeout", "slots",

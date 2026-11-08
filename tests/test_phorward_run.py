@@ -302,6 +302,75 @@ class RunTests(WrapperCase):
         self.assertEqual(json.loads(stored.read_text())["error"]["code"], "cancelled")
 
 
+class PathsAndPatchTests(WrapperCase):
+    TAR = {"smoke.info.yml": b"x", "src/A.php": b"<?php\n", "src/B.php": b"<?php\n", "tests/src/Unit/ATest.php": b"<?php\n"}
+
+    def test_paths_limit_the_checks_that_support_them(self):
+        rc, result, _ = self.run_wrapper("run --protocol 1 --paths src/A.php,src/B.php", make_tar(self.TAR))
+        self.assertEqual(rc, 0, result)
+        scopes = {c["name"]: c.get("scope") for c in result["checks"]}
+        self.assertEqual(scopes, {"lint": "paths", "phpcs": "paths", "phpstan": None, "phpunit": None})
+        lint, phpcs, phpstan, phpunit = self.container_runs()
+        self.assertEqual(lint[-2:], ["src/A.php", "src/B.php"])
+        self.assertEqual(phpcs[-3:], ["--warning-severity=0", "src/A.php", "src/B.php"])
+        self.assertNotIn("src/A.php", phpstan, "phpstan keeps looking at the whole project")
+        self.assertNotIn("src/A.php", phpunit)
+
+    def test_without_paths_nothing_changes(self):
+        rc, result, _ = self.run_wrapper("run --protocol 1 --checks lint,phpcs", make_tar(self.TAR))
+        self.assertTrue(all("scope" not in c for c in result["checks"]))
+
+    def test_the_default_checks_do_not_include_phpcbf(self):
+        rc, result, _ = self.run_wrapper("run --protocol 1 --paths src/A.php", make_tar(self.TAR))
+        self.assertNotIn("phpcbf", [c["name"] for c in result["checks"]])
+
+    def test_phpcbf_returns_the_patch_and_keeps_the_log_apart(self):
+        patch = "--- a/src/A.php\n+++ b/src/A.php\n@@ -1 +1 @@\n-<?php\n+<?php\n+\n"
+        self.behavior = {"phpcbf": {"output": patch, "stderr": "Fixed 1 file\n"}}
+        rc, result, _ = self.run_wrapper("run --protocol 1 --checks phpcbf --paths src/A.php", make_tar(self.TAR))
+        self.assertEqual(rc, 0, result)
+        (entry,) = result["checks"]
+        self.assertEqual(entry["name"], "phpcbf")
+        self.assertEqual(entry["status"], "passed")
+        self.assertEqual(entry["patch"], patch)
+        self.assertEqual(entry["patch_bytes"], len(patch))
+        self.assertEqual(entry["output"], "Fixed 1 file\n")
+        self.assertEqual(entry["scope"], "paths")
+        stored = json.loads((self.base / "results" / f"{result['run_id']}.json").read_text())
+        self.assertEqual(stored, result)
+
+    def test_an_empty_patch_means_nothing_to_fix(self):
+        rc, result, _ = self.run_wrapper("run --protocol 1 --checks phpcbf --paths src/A.php", make_tar(self.TAR))
+        (entry,) = result["checks"]
+        self.assertEqual((entry["status"], entry["patch"], entry["patch_bytes"]), ("passed", "", 0))
+
+    def test_phpcbf_is_never_a_failed_gate(self):
+        self.behavior = {"phpcbf": {"rc": 0, "output": "diff\n"}}
+        rc, result, _ = self.run_wrapper("run --protocol 1 --checks phpcbf,phpcs --paths src/A.php", make_tar(self.TAR))
+        self.assertEqual(rc, 0)
+        self.assertEqual([c["name"] for c in result["checks"]], ["phpcbf", "phpcs"], "phpcbf runs before phpcs")
+
+    def test_a_patch_over_the_policy_limit_is_dropped_not_cut(self):
+        self.policy["max_patch_bytes"] = 50
+        self.behavior = {"phpcbf": {"output": "x" * 200}}
+        rc, result, _ = self.run_wrapper("run --protocol 1 --checks phpcbf --paths src/A.php", make_tar(self.TAR))
+        (entry,) = result["checks"]
+        self.assertEqual(entry["status"], "passed")
+        self.assertNotIn("patch", entry)
+        self.assertEqual((entry["patch_dropped"], entry["patch_bytes"]), ("too_large", 200))
+
+    def test_a_patch_that_is_not_text_is_dropped(self):
+        self.behavior = {"phpcbf": {"output_hex": "ff fe".replace(" ", "")}}
+        rc, result, _ = self.run_wrapper("run --protocol 1 --checks phpcbf --paths src/A.php", make_tar(self.TAR))
+        (entry,) = result["checks"]
+        self.assertEqual(entry["patch_dropped"], "not_text")
+        self.assertNotIn("patch", entry)
+
+    def test_more_than_the_allowed_number_of_paths_is_refused(self):
+        paths = ",".join(f"src/F{i}.php" for i in range(501))
+        self.refused(f"run --protocol 1 --paths {paths}", "bad_request")
+
+
 class LibraryProfileTests(WrapperCase):
     """The wrapper follows the profile's manifest: here a php-library image, which has no database."""
 
@@ -374,6 +443,15 @@ class RefusalTests(WrapperCase):
             ("run --protocol 1 --checks lint --tests a/ATest.php", "bad_request"),
             ("run --protocol 1 --tests missing/ATest.php", "bad_request"),
             ("run --protocol 1 --shard 1/2", "bad_request"),
+            ("run --protocol 1 --paths ../etc/passwd", "bad_request"),
+            ("run --protocol 1 --paths /etc/passwd", "bad_request"),
+            ("run --protocol 1 --paths a//b.php", "bad_request"),
+            ("run --protocol 1 --paths ./a.php", "bad_request"),
+            ("run --protocol 1 --paths -rf", "bad_request"),
+            ("run --protocol 1 --paths src/A.php,src/A.php", "bad_request"),
+            ("run --protocol 1 --paths missing/A.php", "bad_request"),
+            ("run --protocol 1 --paths src", "bad_request"),
+            ("run --protocol 1 --checks phpcbf", "bad_request"),
         ]:
             with self.subTest(request=request):
                 self.refused(request, code)

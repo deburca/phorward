@@ -3,6 +3,7 @@
   "description": "Sandbox for a plain PHP library or application: the project's own composer.lock is installed at build time, so phpunit, phpcs and phpstan run offline.",
   "provides": [
     "lint",
+    "phpcbf",
     "phpcs",
     "phpstan",
     "phpunit"
@@ -63,6 +64,30 @@
         "sh",
         "-c",
         "out=$(find . -name '*.php' -not -path './vendor/*' -not -path './node_modules/*' -print0 | xargs -0 -n1 php -l 2>&1); rc=$?; printf '%s\\n' \"$out\" | grep -v '^No syntax errors detected'; exit $rc"
+      ],
+      "argv_paths": [
+        "sh",
+        "-c",
+        "rc=0; for f in \"$@\"; do out=$(php -l \"$f\" 2>&1) || { printf '%s\\n' \"$out\"; rc=1; }; done; exit $rc",
+        "sh",
+        "{paths}"
+      ]
+    },
+    "phpcbf": {
+      "workdir": "/tmp",
+      "default": false,
+      "needs_paths": true,
+      "patch": true,
+      "argv": [
+        "sh",
+        "-c",
+        "echo 'phpcbf needs --paths' >&2; exit 2"
+      ],
+      "argv_paths": [
+        "with-project",
+        "phorward-check",
+        "phpcbf",
+        "{paths}"
       ]
     },
     "phpcs": {
@@ -71,6 +96,12 @@
         "with-project",
         "phorward-check",
         "phpcs"
+      ],
+      "argv_paths": [
+        "with-project",
+        "phorward-check",
+        "phpcs",
+        "{paths}"
       ]
     },
     "phpstan": {

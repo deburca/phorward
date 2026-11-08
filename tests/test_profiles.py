@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROFILES = ROOT / "profiles"
 BUILD = ROOT / "server" / "build-image"
 FAKE = ROOT / "tests" / "fakes" / "fake-engine"
-CHECKS = ("lint", "phpcs", "phpstan", "phpunit")
+CHECKS = ("lint", "phpcbf", "phpcs", "phpstan", "phpunit")
 NAME_FROM = ("info.yml", "composer-package")
 LABELS = ("phorward.profile", "phorward.module-name", "phorward.module-path")
 
@@ -109,6 +109,10 @@ class ProfileContractTests(unittest.TestCase):
             self.assertTrue(check["workdir"].startswith(("/", "{module_path}")))
             if "argv_tests" in check:
                 self.assertIn("{tests}", check["argv_tests"])
+            if "argv_paths" in check:
+                self.assertIn("{paths}", check["argv_paths"])
+            if check.get("needs_paths"):
+                self.assertIn("argv_paths", check, "a check that needs paths must say how to use them")
         self.assertEqual(set(manifest["provides"]), set(manifest["checks"]))
         for database, spec in manifest["databases"].items():
             for wrapper in spec.get("wrap", []):
@@ -128,7 +132,8 @@ class ProfileContractTests(unittest.TestCase):
         for template in templates:
             self.assertTrue((directory / template).is_file(), f"missing smoke template {template}")
         covered = set(smoke["bad"]) | set(smoke["scratch"])
-        self.assertEqual(covered, set(manifest["checks"]), "every check needs a must-fail case in the smoke test")
+        gates = {n for n, c in manifest["checks"].items() if c.get("default", True)}
+        self.assertEqual(covered, gates, "every check that can fail needs a must-fail case in the smoke test")
         self.assertIn("phpunit", smoke["bad"])
         self.assertTrue(smoke["bad"]["phpunit"]["tests"])
         self.assertIn(manifest["test_layout"], ("drupal", "flat"))

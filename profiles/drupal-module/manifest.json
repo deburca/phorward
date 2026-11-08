@@ -3,6 +3,7 @@
   "description": "Sandbox for a Drupal 11 module: Drupal core and core-dev baked in, so Kernel and Unit tests run offline.",
   "provides": [
     "lint",
+    "phpcbf",
     "phpcs",
     "phpstan",
     "phpunit"
@@ -76,6 +77,31 @@
         "sh",
         "-c",
         "out=$(find . \\( -name '*.php' -o -name '*.module' -o -name '*.inc' -o -name '*.install' -o -name '*.theme' -o -name '*.profile' \\) -not -path './vendor/*' -not -path './node_modules/*' -print0 | xargs -0 -n1 php -l 2>&1); rc=$?; printf '%s\\n' \"$out\" | grep -v '^No syntax errors detected'; exit $rc"
+      ],
+      "argv_paths": [
+        "sh",
+        "-c",
+        "rc=0; for f in \"$@\"; do out=$(php -l \"$f\" 2>&1) || { printf '%s\\n' \"$out\"; rc=1; }; done; exit $rc",
+        "sh",
+        "{paths}"
+      ]
+    },
+    "phpcbf": {
+      "workdir": "{module_path}",
+      "default": false,
+      "needs_paths": true,
+      "patch": true,
+      "argv": [
+        "sh",
+        "-c",
+        "echo 'phpcbf needs --paths' >&2; exit 2"
+      ],
+      "argv_paths": [
+        "sh",
+        "-c",
+        "set -u\nsrc=$(pwd); fix=/tmp/phorward-fix\nrm -rf \"$fix\"; mkdir -p \"$fix\" || exit 125\nfor f in phpcs.xml phpcs.xml.dist .phpcs.xml .phpcs.xml.dist; do [ -f \"$f\" ] && cp \"$f\" \"$fix/\"; done\ncp --parents -- \"$@\" \"$fix/\" || exit 125\ncd \"$fix\" || exit 125\nphpcbf --warning-severity=0 -- \"$@\" >&2; rc=$?\n[ \"$rc\" -le 2 ] || exit \"$rc\"\nfor f in \"$@\"; do diff -u --label \"a/$f\" --label \"b/$f\" \"$src/$f\" \"$fix/$f\"; done\nexit 0",
+        "sh",
+        "{paths}"
       ]
     },
     "phpcs": {
@@ -83,6 +109,11 @@
       "argv": [
         "phpcs",
         "--warning-severity=0"
+      ],
+      "argv_paths": [
+        "phpcs",
+        "--warning-severity=0",
+        "{paths}"
       ]
     },
     "phpstan": {

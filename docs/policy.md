@@ -47,6 +47,7 @@ memory and load, so a mistake in the numbers is visible without starting a run.
 | `max_archive_file_bytes` | 64 MiB | Size of any one file |
 | `max_archive_bytes` | 512 MiB | Total size of the tree |
 | `max_output_bytes` | `200000` | Output kept per check (the last bytes) |
+| `max_patch_bytes` | 1 MiB | Largest patch a check (`phpcbf`) may return; a bigger one is dropped, not cut |
 
 ### Disk
 

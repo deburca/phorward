@@ -3,7 +3,8 @@
 
 FAKE_STATE     directory: every call is appended to calls.jsonl; containers/<name>.json marks a live container
 FAKE_IMAGES    newline-separated image references `images` prints (default: one drupal-module image)
-FAKE_BEHAVIOR  JSON {check: {"rc": int, "output": str, "repeat": int, "sleep": seconds, "oom": bool}}
+FAKE_BEHAVIOR  JSON {check: {"rc": int, "output": str, "stderr": str, "output_hex": hex bytes for stdout,
+               "repeat": int, "sleep": seconds, "oom": bool}}
                keyed by the check name at the end of the container name (phorward-<run>-<check>)
 """
 import json
@@ -74,7 +75,13 @@ elif cmd == "run":
     out = spec.get("output", "")
     for _ in range(spec.get("repeat", 1)):
         sys.stdout.write(out)
+    if "output_hex" in spec:
+        sys.stdout.flush()
+        sys.stdout.buffer.write(bytes.fromhex(spec["output_hex"]))
     sys.stdout.flush()
+    if spec.get("stderr"):
+        sys.stderr.write(spec["stderr"])
+        sys.stderr.flush()
     waited = 0.0
     while waited < spec.get("sleep", 0):
         if (state / "containers" / f"{name}.killed").exists():
