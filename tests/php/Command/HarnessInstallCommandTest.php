@@ -22,6 +22,7 @@ final class HarnessInstallCommandTest extends TestCase {
     '.opencode/command/verify.md',
     '.harness/harness.sh',
     '.harness/CONVENTIONS.md',
+    '.harness/command',
   ];
 
   private string $project;
@@ -64,6 +65,18 @@ final class HarnessInstallCommandTest extends TestCase {
     $this->assertStringContainsString('still reviews the logic and the tests', $out);
   }
 
+  public function testTheCommandTheAgentsCallComesFromTheSettingAndDefaultsToTheVendorBin(): void {
+    $this->install();
+    $this->assertStringContainsString('`vendor/bin/phorward verify`', (string) file_get_contents($this->project . '/.opencode/command/verify.md'));
+    $this->assertSame("vendor/bin/phorward\n", file_get_contents($this->project . '/.harness/command'));
+
+    $this->install(['--harness-command', 'phorward', '--force']);
+
+    $this->assertStringContainsString('`phorward verify`', (string) file_get_contents($this->project . '/.opencode/command/verify.md'));
+    $this->assertStringNotContainsString('vendor/bin', (string) file_get_contents($this->project . '/.opencode/agent/phorward-dev.md'));
+    $this->assertSame("phorward\n", file_get_contents($this->project . '/.harness/command'));
+  }
+
   public function testRunningItAgainChangesNothing(): void {
     $this->install();
     [$code, $out] = $this->install();
@@ -71,7 +84,7 @@ final class HarnessInstallCommandTest extends TestCase {
     $this->assertSame(0, $code);
     $this->assertStringNotContainsString('created', $out);
     $this->assertStringNotContainsString('kept', $out);
-    $this->assertSame(7, substr_count($out, 'unchanged'));
+    $this->assertSame(8, substr_count($out, 'unchanged'));
   }
 
   public function testItNeverOverwritesAFileThatWasEdited(): void {
@@ -151,7 +164,7 @@ final class HarnessInstallCommandTest extends TestCase {
       $text = (string) file_get_contents($file);
       preg_match_all('/\{\{\s*(\w+)\s*\}\}/', $text, $found);
       foreach ($found[1] as $name) {
-        $this->assertContains($name, ['project', 'kind'], "$file uses {{{$name}}}");
+        $this->assertContains($name, ['project', 'kind', 'phorward'], "$file uses {{{$name}}}");
       }
       $this->assertDoesNotMatchRegularExpression('/hivelog|ddev/i', $text, $file);
     }

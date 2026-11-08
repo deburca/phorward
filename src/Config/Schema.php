@@ -41,6 +41,8 @@ final class Schema {
     $schema->add(new Setting('sync.max_size', Scope::Project, Type::String, 'Largest tree to send, e.g. 256m; a bigger one is refused before upload',
       '256m', NULL, '/^[0-9]{1,6}[kmg]$/', NULL, NULL, 'a size such as 256m or 1g'));
     $schema->add(new Setting('sync.include_vendor', Scope::Project, Type::Bool, 'Send vendor/ with the tree', FALSE));
+    $schema->add(new Setting('harness.command', Scope::Project, Type::String, 'How the installed harness agents and commands call phorward',
+      'vendor/bin/phorward', NULL, '/^[A-Za-z0-9_.\/~-]{1,200}$/', NULL, NULL, 'a command or path such as phorward or vendor/bin/phorward'));
     $schema->add(new Setting('limits.memory', Scope::Project, Type::String, 'Memory to ask the server for, e.g. 4g; the server may lower it',
       NULL, NULL, '/^[0-9]{1,6}[kmg]$/', NULL, NULL, 'a size such as 512m or 4g'));
     $schema->add(new Setting('limits.cpus', Scope::Project, Type::Number, 'CPUs to ask for; the server may lower it', NULL, NULL, NULL, 0.1, 64));

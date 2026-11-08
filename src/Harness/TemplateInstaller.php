@@ -34,6 +34,9 @@ final class TemplateInstaller {
 
   private const CONVENTIONS = '.harness/CONVENTIONS.md';
 
+  /** The command harness.sh runs when HARNESS_PHORWARD is not set. */
+  private const COMMAND_FILE = '.harness/command';
+
   private const EXECUTABLE = ['.harness/harness.sh'];
 
   public function __construct(private readonly ProfileCatalog $catalog, private readonly string $templatesDir) {}
@@ -41,26 +44,31 @@ final class TemplateInstaller {
   /**
    * @return array<string, string> Project path to one of the status constants, in the order installed.
    */
-  public function install(string $root, string $profile, string $project, bool $force, bool $dryRun): array {
+  public function install(string $root, string $profile, string $project, bool $force, bool $dryRun, string $command = 'vendor/bin/phorward'): array {
     $spec = $this->catalog->harnessSpec($profile);
     if ($spec === NULL) {
       throw new ConfigException("This package has no harness templates for the profile \"$profile\".");
     }
-    $facts = ['{{project}}' => $project, '{{kind}}' => $spec['kind']];
+    $facts = ['{{project}}' => $project, '{{kind}}' => $spec['kind'], '{{phorward}}' => $command];
     $sources = [];
     foreach (self::FILES as $template => $target) {
       $sources[$target] = $this->templatesDir . '/' . $template;
     }
     $sources[self::CONVENTIONS] = $spec['conventions'];
+    $generated = [self::COMMAND_FILE => $command . "\n"];
 
     $record = $this->readRecord($root);
     $results = [];
+    $contents = [];
     foreach ($sources as $target => $source) {
       $text = file_get_contents($source);
       if ($text === FALSE) {
         throw new ConfigException("Cannot read the template $source.");
       }
-      $content = strtr($text, $facts);
+      $contents[$target] = strtr($text, $facts);
+    }
+    $contents += $generated;
+    foreach ($contents as $target => $content) {
       $hash = hash('sha256', $content);
       $path = $root . '/' . $target;
       $existing = is_file($path) ? (string) file_get_contents($path) : NULL;

@@ -24,16 +24,16 @@ you touch, read that section, not the whole guide.
 
 ## The gate
 
-`vendor/bin/phorward verify` runs on a server, not on this machine, and checks what CI checks: syntax, phpcs,
+`{{phorward}} verify` runs on a server, not on this machine, and checks what CI checks: syntax, phpcs,
 phpstan, the PHPUnit tests mapped to your change, a "tests changed" check, and a security scan. Nothing
 fixes style for you: fix each phpcs finding by hand. It prints a report and exits 0 only when everything
 passes. Exit 2, 70 or 75 means the gates could not run (the server, not your code): say so and stop. Forms:
 
-- `vendor/bin/phorward verify` — everything, for what changed since the base branch (slow: minutes).
-- `vendor/bin/phorward verify --only phpcs` — fast style check while you work.
-- `vendor/bin/phorward verify --only phpunit --tests "tests/FooTest.php"` — exactly one test file.
+- `{{phorward}} verify` — everything, for what changed since the base branch (slow: minutes).
+- `{{phorward}} verify --only phpcs` — fast style check while you work.
+- `{{phorward}} verify --only phpunit --tests "tests/FooTest.php"` — exactly one test file.
 
-You are NOT done until a full `vendor/bin/phorward verify` run exits 0. Never say "done", "fixed" or "should
+You are NOT done until a full `{{phorward}} verify` run exits 0. Never say "done", "fixed" or "should
 work" before that. Quote the report's last lines in your final message.
 
 ## Bug fixes: reproduce first

@@ -7,4 +7,4 @@ Implement this feature:
 $ARGUMENTS
 
 Add tests for every new public method, branch and access rule in the same pass. Run the full
-`vendor/bin/phorward verify` before you report, and quote its result.
+`{{phorward}} verify` before you report, and quote its result.

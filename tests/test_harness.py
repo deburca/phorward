@@ -83,6 +83,14 @@ class HarnessTest(unittest.TestCase):
         self.assertIn("no model", done.stderr)
         self.assertEqual(self.count("oc-count"), 0)
 
+    def test_the_command_written_by_the_installer_is_used_when_the_environment_names_none(self):
+        (self.repo / ".harness").mkdir()
+        (self.repo / ".harness" / "command").write_text(f"{self.tmp / 'bin' / 'phorward'}\n")
+        self.verdicts(0)
+        done = self.harness("-m", "p/m", "fix the thing", env={"HARNESS_PHORWARD": ""})
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.count("pw-count"), 1)
+
     def test_passing_on_the_first_attempt(self):
         self.verdicts(0)
         done = self.harness("-m", "p/m", "fix the thing")

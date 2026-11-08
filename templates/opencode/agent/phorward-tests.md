@@ -38,7 +38,7 @@ Start by reading `.harness/CONVENTIONS.md` (where tests go, what a test needs to
 5. Cover edge cases the statement implies: empty input, a record with no references, ties, unknown
    values, running an update hook twice, a user without the permission.
 6. Run each new test with
-   `vendor/bin/phorward verify --only phpunit --tests "<path>"`.
+   `{{phorward}} verify --only phpunit --tests "<path>"`.
    For a bug the tests must FAIL, for the reason the task describes. For a feature they fail because the
    behaviour does not exist yet. A test that passes now proves nothing about the change: fix it so it
    fails for the right reason, or delete it.

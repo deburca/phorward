@@ -15,7 +15,8 @@ vendor/bin/phorward harness:install            # --dry-run shows what would chan
 | `harness/harness.sh` | `.harness/harness.sh` | The retry loop around opencode (below) |
 | `../profiles/<profile>/harness/CONVENTIONS.md` | `.harness/CONVENTIONS.md` | A starter for the project's conventions, which the agents read first. **The project owns it**: edit it |
 
-`{{project}}` and `{{kind}}` (for example "a Drupal module") are the only placeholders. Everything that is specific
+`{{project}}`, `{{kind}}` (for example "a Drupal module") and `{{phorward}}` (the command, from `harness.command`, default
+`vendor/bin/phorward`) are the only placeholders. Everything that is specific
 to a project (where tests go, the rules a change most often breaks, which guide covers which area) belongs in
 `.harness/CONVENTIONS.md`, which is written once and never replaced without `--force`. The agent prompts themselves
 carry the generic discipline: reproduce a bug first, stop after three failed fixes, never suppress a gate.
@@ -26,7 +27,7 @@ alone. Commit `.opencode/` and `.harness/`. The loop's own scratch files in `.ha
 `red/`) can go in `.gitignore`.
 
 The agents may not run `git stash`, `restore`, `rm`, `reset`, `checkout`, `clean`, `commit` or `push` (a model once
-stashed the harness itself away). The gates call `vendor/bin/phorward verify`, so the project needs no other tooling.
+stashed the harness itself away). The gates call `phorward verify` (by the command in `harness.command`), so the project needs no other tooling.
 
 `harness/harness.sh` is the retry loop around opencode: a fresh session per attempt that sees only the task and the last
 `phorward verify` report, bounded attempts, an optional escalation model, a time limit on every session, one retry when

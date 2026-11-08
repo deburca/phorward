@@ -43,7 +43,7 @@ final class HarnessInstallCommand {
         . '"module" in phorward.json ("phorward config" shows what was detected).');
     }
 
-    $results = $this->installer->install($root, (string) $profile, (string) $project, $force, $dryRun);
+    $results = $this->installer->install($root, (string) $profile, (string) $project, $force, $dryRun, (string) $config->get('harness.command'));
     $labels = [
       TemplateInstaller::CREATED => $dryRun ? 'would create' : 'created',
       TemplateInstaller::UPDATED => $dryRun ? 'would update' : 'updated',

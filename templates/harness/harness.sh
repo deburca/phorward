@@ -24,7 +24,7 @@
 # Exit 2: usage or setup error. Exit 3: the gates could not run (server, ssh or configuration): the attempt is
 # not counted against the model, and the report says what to fix before running again.
 #
-# Environment: HARNESS_MODEL, HARNESS_ESCALATE, HARNESS_PHORWARD (the command, default vendor/bin/phorward),
+# Environment: HARNESS_MODEL, HARNESS_ESCALATE, HARNESS_PHORWARD (the command; default the first line of .harness/command, written by harness:install, else vendor/bin/phorward),
 # HARNESS_SESSION_TIMEOUT (seconds a model session may run, default 1500), HARNESS_AGENT_RETRY_WAIT (default 20), HARNESS_AGENT and HARNESS_TESTS_AGENT
 # (opencode agent names, default phorward-dev and phorward-tests).
 set -uo pipefail
@@ -59,6 +59,7 @@ TASK="$*"
 
 cd "$ROOT" || exit 2
 if [ -n "${HARNESS_PHORWARD:-}" ]; then PHORWARD="$HARNESS_PHORWARD"
+elif [ -s .harness/command ]; then PHORWARD="$(head -n 1 .harness/command)"
 elif [ -x vendor/bin/phorward ]; then PHORWARD="vendor/bin/phorward"
 else PHORWARD="phorward"; fi
 # A model session must have a time limit: one once hung for 20 hours.
