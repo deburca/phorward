@@ -14,7 +14,7 @@ blocked-by:
 # Task 0004: phorward Composer Client (`bin/phorward`, Composer Script Entry Points)
 
 ## Context
-Origin: domus task 0147. The client is a Composer package a project adds with `composer require --dev`. It ships `bin/phorward`; the project defines aliases in its own `scripts` (a dependency's `scripts` section never runs). The test-first harness and the HiveLog Drupal module are the first consumers ([[0002-generic-configurable-packagist-tool]]). Today `bin/phorward` is a placeholder that prints its version.
+Origin: prototype task 0147. The client is a Composer package a project adds with `composer require --dev`. It ships `bin/phorward`; the project defines aliases in its own `scripts` (a dependency's `scripts` section never runs). The test-first harness and the HiveLog Drupal module are the first consumers ([[0002-generic-configurable-packagist-tool]]). Today `bin/phorward` is a placeholder that prints its version.
 
 ## Acceptance criteria
 - [x] `phorward run [--checks …] [--profile …] [--format json|junit|human]` tars the working tree (default excludes `.git`, `vendor`, `node_modules`, overridable by config), pipes it over SSH to the forced command and parses the JSON result (`src/Command/RunCommand.php`; reports in `src/Report/`; `docs/client.md`)

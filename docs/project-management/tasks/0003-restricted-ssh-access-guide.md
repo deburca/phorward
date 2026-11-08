@@ -14,7 +14,7 @@ blocked-by:
 # Task 0003: Restricted SSH Access Guide (Forced Command, Unprivileged User)
 
 ## Context
-Origin: domus task 0146 (the generic half; the first server's own key, user, VPN ACL and credential-inventory entry stay in that repo). The client reaches the server over SSH to run `phorward-run`. The code it runs is model-generated, so the credential must be able to do exactly one thing ([[0001-offload-validation-via-ssh-and-sandboxed-containers]]).
+Origin: prototype task 0146 (the generic half; the first server's own key, user, VPN ACL and credential-inventory entry stay in that repo). The client reaches the server over SSH to run `phorward-run`. The code it runs is model-generated, so the credential must be able to do exactly one thing ([[0001-offload-validation-via-ssh-and-sandboxed-containers]]).
 
 ## Acceptance criteria
 - [x] A security guide in `docs/` covers: a dedicated key pair (private key never in git), an `authorized_keys` entry with `command="…/phorward-run"` plus `restrict` (no pty, forwarding or other commands) and optional `from=`, a dedicated unprivileged user with no sudo, and why host data is never mounted into runs (`docs/ssh-access.md`)
@@ -30,7 +30,7 @@ Origin: domus task 0146 (the generic half; the first server's own key, user, VPN
 - **Not tested, because it needs root and a second account:** a freshly created dedicated user with `loginctl enable-linger` (do the cgroup limits still apply? the guide says to run `hostile-test` to find out), and a `nologin` login shell (the guide says it breaks the forced command, from the sshd documentation). The real `sshd` of the first server was not touched; `AllowUsers` there lists a single user, so the dedicated user will need adding.
 - **Not reproduced:** the Docker-group root-equivalence demonstration (declined by the environment's permission check, since it mounts the host's root directory into a container). The guide cites Docker's documentation and says so.
 - Leftovers on the first server from this test (`~/pr-ssh` with its throwaway keys, the scratch directories `~/pr-test` and the subdirectories of `~/phorward-parity` created during tasks 0002 to 0011, and the logs and scripts in the home directory) were deleted on 2026-11-07 with the owner's approval. The owner's earlier `~/phorward-parity/mariadb`, `module` and `report.txt`, `~/phorward-build` and `~/validate-build` were left alone.
-- The first deployment still has its own task in the domus repo (user, key, VPN rule, credential inventory, refusal tests): follow `docs/ssh-access.md` and finish with `server/access-test`.
+- The first deployment still has its own task in the prototype repository (user, key, VPN rule, credential inventory, refusal tests): follow `docs/ssh-access.md` and finish with `server/access-test`.
 - Found while testing: my first `access-test` ran `kill 0` in its exit trap when no forward had been started, which signals the whole process group, caller included. Fixed to signal only a PID it started.
 
 ## Related

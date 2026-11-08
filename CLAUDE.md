@@ -7,7 +7,7 @@ tools and the `drupal-module` image profile work and are verified on one server;
 `doctor`, `server:install` and publication are not written.
 
 ## Read first
-1. `docs/project-management/notes/2026-11-05-handover-from-domus.md`: state, decisions, gotchas, every pending update
+1. `docs/project-management/notes/2026-11-05-handover-from-prototype.md`: state, decisions, gotchas, every pending update
 2. `docs/project-management/index.md`, then the two ADRs in `decisions/` and the tasks in `tasks/`
 3. `README.md` and `docs/image.md`
 
@@ -30,7 +30,7 @@ tools and the `drupal-module` image profile work and are verified on one server;
 ## Do not, without asking the owner
 - Push to a remote, create a GitHub repository, publish to Packagist, or tag a release.
 - Delete anything on a server or in another repository.
-- Put homelab specifics (hostnames, VPN names, key material) in files meant to be public; see task 0009.
+- Put private-server specifics (hostnames, VPN names, key material) in files meant to be public; see task 0009.
 
 ## Verifying changes
 Shell and PHP syntax can be checked locally (`bash -n`, `php -l`, `composer validate`,

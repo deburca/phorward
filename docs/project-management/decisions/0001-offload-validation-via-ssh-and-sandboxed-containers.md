@@ -8,10 +8,10 @@ supersedes:
 # ADR-0001: Offload Validation (lint, phpcs, phpstan, phpunit) over SSH into Throwaway Sandboxed Containers
 
 ## Status
-accepted (2026-11-05). Carried over from domus ADR-0029 (status there: proposed), where the decision was made while prototyping on the first deployment host. It is accepted here because the prototype now works end to end (see [[0001-pinned-php-validation-image]]). The scope and packaging of the tool are decided in [[0002-generic-configurable-packagist-tool]].
+accepted (2026-11-05). Carried over from prototype ADR-0029 (status there: proposed), where the decision was made while prototyping on the first deployment host. It is accepted here because the prototype now works end to end (see [[0001-pinned-php-validation-image]]). The scope and packaging of the tool are decided in [[0002-generic-configurable-packagist-tool]].
 
 ## Context
-A test-first model-evaluation harness (tests are written before a model proposes a solution; the solution is then checked with lint, phpcs and the pre-written phpunit tests) ran on a local PC with 8 GB RAM. Those checks are the heavy part. A home server with 8 cores / 16 threads and 96 GB RAM was available, running only Home Assistant and Nextcloud.
+A test-first model-evaluation harness (tests are written before a model proposes a solution; the solution is then checked with lint, phpcs and the pre-written phpunit tests) ran on a local PC with 8 GB RAM. Those checks are the heavy part. A home server with 8 cores / 16 threads and 96 GB RAM was available, running only a few light services.
 
 Constraints that shape the choice:
 - **The code under test is model-generated and phpunit executes it**, i.e. arbitrary code execution. The server also holds personal data, so isolation matters more than convenience.

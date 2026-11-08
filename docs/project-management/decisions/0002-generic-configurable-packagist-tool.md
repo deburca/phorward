@@ -8,11 +8,11 @@ supersedes:
 # ADR-0002: A Generic, Configurable Tool Published on Packagist
 
 ## Status
-proposed (2026-11-05). Carried over from domus ADR-0030, which extracted this project from the domus repo; it amends [[0001-offload-validation-via-ssh-and-sandboxed-containers]] on scope and packaging only. Execution is tracked in the tasks listed under Consequences.
+proposed (2026-11-05). Carried over from prototype ADR-0030, which extracted this project from the prototype repository; it amends [[0001-offload-validation-via-ssh-and-sandboxed-containers]] on scope and packaging only. Execution is tracked in the tasks listed under Consequences.
 
 ## Context
 [[0001-offload-validation-via-ssh-and-sandboxed-containers]] chose "SSH + throwaway container". By the end of [[0001-pinned-php-validation-image]] the result is useful beyond one person and one server: the image builds on x86_64 and arm64, runs PHP 8.3 and 8.5 with identical results, and uses an in-container MariaDB so no network is needed at run time. Two things no longer fit the first prototype:
-- **The first host is one host, not the feature.** The prototype was tied to one homelab and to one Drupal module.
+- **The first host is one host, not the feature.** The prototype was tied to one personal server and to one Drupal module.
 - **The caller wants to `composer require` the capability** and call it from the project's `scripts`, and other people with their own SSH-reachable Linux box should be able to do the same.
 
 ## Decision
@@ -43,7 +43,7 @@ A profile is a directory with a Dockerfile and a manifest. Two ship at first: `p
 Documented, not assumed: a forced-command `authorized_keys` entry with `restrict`, a dedicated unprivileged user, rootless Podman preferred over the `docker` group (root-equivalent), and a plain statement that the sandbox is designed for untrusted model output but is not a formal guarantee. Confirmed and tested in [[0003-restricted-ssh-access-guide]] (2026-11-07), with two additions: `restrict` is essential (a forced command alone still allows a terminal and port forwarding), and the same restrictions should also be enforced in `sshd_config` (`Match User` with `ForceCommand` and `DisableForwarding`) with the key file and the kit not writable by the user. The guide is `docs/ssh-access.md`; `server/access-test` is the check. Minimum host: Linux with `sshd`, `rsync` and Docker or Podman, 8 GB RAM for Kernel tests with MariaDB.
 
 ### 6. Naming, licensing, publication
-Name `phorward`; MIT licence (chosen 2026-11-05); Composer vendor name still to be chosen (`deburca` is provisional). Semver from `0.x`, marked experimental. Public documentation and examples contain no homelab specifics. Publication is the last step ([[0009-publish-phorward-to-packagist]]).
+Name `phorward`; MIT licence (chosen 2026-11-05); Composer vendor name still to be chosen (`deburca` is provisional). Semver from `0.x`, marked experimental. Public documentation and examples contain no private-server specifics. Publication is the last step ([[0009-publish-phorward-to-packagist]]).
 
 ### Revisit if
 - profiles multiply beyond PHP (then consider separating the server kit from the client package), or

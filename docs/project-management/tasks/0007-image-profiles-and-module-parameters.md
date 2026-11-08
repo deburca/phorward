@@ -14,7 +14,7 @@ blocked-by:
 # Task 0007: Image Profiles and Module Parameters
 
 ## Context
-Origin: domus task 0150. The `drupal-module` profile is parameterised (package, machine name, extra dev packages are build args), but there is only one profile, no manifest, and some configuration still lives on the command line. [[0002-generic-configurable-packagist-tool]] replaces this with profiles.
+Origin: prototype task 0150. The `drupal-module` profile is parameterised (package, machine name, extra dev packages are build args), but there is only one profile, no manifest, and some configuration still lives on the command line. [[0002-generic-configurable-packagist-tool]] replaces this with profiles.
 
 ## Acceptance criteria
 - [x] A profile is a directory with a Dockerfile and a manifest (name, what it provides, build arguments, per-check command lines, default database, default memory); the wrapper and `build-image` discover profiles from there

@@ -14,14 +14,14 @@ blocked-by:
 # Task 0009: Publish phorward to Packagist
 
 ## Context
-Origin: domus task 0152. Last step of [[0002-generic-configurable-packagist-tool]]. Publishing makes the tool a compatibility promise and a support burden, so it follows a working private use on the first server and HiveLog.
+Origin: prototype task 0152. Last step of [[0002-generic-configurable-packagist-tool]]. Publishing makes the tool a compatibility promise and a support burden, so it follows a working private use on the first server and HiveLog.
 
 ## Acceptance criteria
 - [x] Composer vendor/package name chosen and checked for clashes on Packagist (`deburca/phorward`: free on 2026-11-08, and the `deburca` vendor already holds `deburca/beeswax`)
 - [x] Licence chosen (MIT, 2026-11-05) and `LICENSE` added
 - [x] `composer.json` metadata complete (description, keywords, support links, `bin`, PHP constraint)
 - [x] Public documentation: install, quick start for the `drupal-module` and `php-library` profiles, configuration reference, security guide, requirements (Linux, `sshd`, `rsync`, Docker or Podman, 8 GB RAM for Kernel tests with MariaDB), troubleshooting with `doctor`
-- [ ] Public repository and docs contain no homelab specifics, VPN names, personal hostnames or key material, **checked with a search, not by eye**. Known places that currently mention the first server or its owner's setup: `docs/project-management/` (this vault, ADRs and task origins), `CLAUDE.md`, `profiles/drupal-module/` comments, `docs/image.md`. Decide whether the vault ships in the public tree (scrub it) or is removed from it
+- [ ] Public repository and docs contain no private-server specifics, VPN names, personal hostnames or key material, **checked with a search, not by eye**. Known places that currently mention the first server or its owner's setup: `docs/project-management/` (this vault, ADRs and task origins), `CLAUDE.md`, `profiles/drupal-module/` comments, `docs/image.md`. Decide whether the vault ships in the public tree (scrub it) or is removed from it
 - [x] Protocol version and configuration keys documented as the compatibility surface ([compatibility.md](../../compatibility.md)); first tag `0.1.0` marked experimental (the tag itself is the owner's call, see below)
 - [ ] GitHub repository created and pushed, Packagist package created, webhook for auto-update configured
 - [ ] `composer require --dev` of the published package works in a clean project and a `scripts` alias runs `phorward doctor`
@@ -29,9 +29,9 @@ Origin: domus task 0152. Last step of [[0002-generic-configurable-packagist-tool
 
 Progress 2026-11-08: added [quickstart.md](../../quickstart.md), [troubleshooting.md](../../troubleshooting.md) and [compatibility.md](../../compatibility.md), a documentation table in the README, a CI badge, `homepage` and `support` in `composer.json`, and `actions/checkout` v5 in both workflows. The repository is already public on GitHub (`deburca/phorward`), so "created and pushed" is true except for tags.
 
-The homelab search (`git grep -i` for the first server's and user's names, `homelab`, `home assistant`, `nextcloud`, VPN names, private address ranges, home paths and key material) over everything tracked: **outside the vault nothing is left** (`CLAUDE.md` names the handover note, whose file name contains `domus`; `docs/ssh-access.md` uses the documentation range `203.0.113.0/24` and a placeholder key). **In the vault** there are no hostnames, addresses or VPN names, only the word `homelab` and the name `domus` (the owner's other repository) in the origin notes (`README.md`, decisions 0001 and 0002, tasks 0001, 0005 and 0009, the handover note, the 0.1.0 release note). The remaining decision is the owner's: ship the vault with those mentions, scrub the word and the repository name, or remove the vault from the public tree. `CLAUDE.local.md` and `examples/harness-pilot/results/` are git-ignored and untracked; `examples/` is untracked entirely and `export-ignore`d.
+The search (`git grep -i` over everything tracked, for the first server's and user's names, the words for a home lab and the services run on it, VPN names, private address ranges, home paths and key material) found nothing outside the vault, apart from the documentation range `203.0.113.0/24` and a placeholder key in `docs/ssh-access.md`. In the vault it found no hostnames, addresses or VPN names, only the name of the owner's other repository and the word for a home lab in the origin notes. Decision 2026-11-08: keep the vault public and scrub those mentions. Done: they now say "prototype repository" and "private server", and the handover note is `2026-11-05-handover-from-prototype.md`. The same search now finds nothing. `CLAUDE.local.md` and `examples/harness-pilot/results/` are git-ignored and untracked; `examples/` is untracked entirely and `export-ignore`d.
 
-Still open and needing the owner: the `0.1.0` tag, creating the Packagist package and its webhook (an account action), the vault decision above, and `composer require --dev` from the published package in a clean project.
+Decisions 2026-11-08: tag `0.1.0` now, with a GitHub pre-release carrying notes; checks before calling it done: a clean-project install, a full Linux CI dry run and the image workflow on both architectures. Still open: the tag and release themselves, and `composer require --dev` from the published package in a clean project.
 
 ## Implementation notes
 - Check `git tag` conventions before the first tag (this repo has none; `0.1.0` without a `v` prefix is the plan).

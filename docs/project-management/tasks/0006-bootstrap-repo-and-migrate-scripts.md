@@ -14,7 +14,7 @@ blocked-by:
 # Task 0006: Bootstrap the Repository and Migrate the Validation Scripts
 
 ## Context
-Origin: domus task 0149. [[0002-generic-configurable-packagist-tool]] moved the validation offload out of the domus repo into this one. This task covers the skeleton, the migrated and generalised scripts, and the project hygiene around them.
+Origin: prototype task 0149. [[0002-generic-configurable-packagist-tool]] moved the validation offload out of the prototype repository into this one. This task covers the skeleton, the migrated and generalised scripts, and the project hygiene around them.
 
 ## Acceptance criteria
 - [x] Initial commit `61d099a` (2026-11-05): `composer.json`, `bin/phorward` placeholder, `README.md`, `.gitattributes` (`export-ignore` for tests and docs), `.gitignore`, `docs/image.md`, `src/`, `tests/`, `server/`, `profiles/drupal-module/`
@@ -32,8 +32,8 @@ Origin: domus task 0149. [[0002-generic-configurable-packagist-tool]] moved the 
 - Composer package name `deburca/phorward` is provisional ([[0009-publish-phorward-to-packagist]]).
 
 ## Pending updates
-- In the domus repo: the old `scripts/validate/` copy is still there and is removed only after a long-running harness test on that server has finished (removing it earlier could break that run); then point its README at phorward. Not a task in this repo.
-- On the first server: `~/validate-build/` (old build scratch) and `~/phorward-build/` (this repo's synced copy) exist; a `mysql:8.0` image from the parity runs is still pulled; `domus-validate:php8.3` and `php8.5` are the pre-migration images. Clean up when convenient and when the harness run is done.
+- In the prototype repository: the old `scripts/validate/` copy is still there and is removed only after a long-running harness test on that server has finished (removing it earlier could break that run); then point its README at phorward. Not a task in this repo.
+- On the first server: `~/validate-build/` (old build scratch) and `~/phorward-build/` (this repo's synced copy) exist; a `mysql:8.0` image from the parity runs is still pulled; `*-validate:php8.3` and `*-validate:php8.5` are the pre-migration images. Clean up when convenient and when the harness run is done.
 
 ## Related
 - Project:: [[first-public-release]]

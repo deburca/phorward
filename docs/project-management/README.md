@@ -66,13 +66,13 @@ project-management/
 
 ## phorward specifics
 
-- **Origin.** The first decisions and tasks came from the domus repo (a homelab server repo) on
+- **Origin.** The first decisions and tasks came from the prototype repository (a private server repository) on
   2026-11-05, where the validation offload was designed and prototyped. They were renumbered into this
-  vault's own sequence; each note names its domus origin in plain text (no cross-repo wikilinks).
+  vault's own sequence; each note names its origin in plain text (no cross-repo wikilinks).
 - **Public repository note.** This vault is plain text in the repo. Before the repository is made public
-  (task 0009) its notes must be scrubbed of homelab specifics or the `docs/project-management/`
+  (task 0009) its notes must be scrubbed of private-server specifics or the `docs/project-management/`
   directory removed from the public tree; see that task.
 - **Tag format.** No release has been tagged yet. The first is planned as `0.1.0` (no `v` prefix);
   confirm with `git tag` before writing a `version:` value once tags exist.
-- **Start here.** Read `notes/2026-11-05-handover-from-domus.md`, then `index.md`.
+- **Start here.** Read `notes/2026-11-05-handover-from-prototype.md`, then `index.md`.
 

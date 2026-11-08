@@ -14,7 +14,7 @@ blocked-by:
 # Task 0002: phorward Server Wrapper (`phorward-run`: Sandboxed Run, Structured JSON Result)
 
 ## Context
-Origin: domus task 0145. The wrapper is part of the server kit and is the single entry point the SSH forced command invokes ([[0001-offload-validation-via-ssh-and-sandboxed-containers]], [[0002-generic-configurable-packagist-tool]]). It is generic: nothing in it names a particular host or module. It does not exist yet; today only the pieces it will be built from exist (`server/smoke-test`, `server/parity-check`).
+Origin: prototype task 0145. The wrapper is part of the server kit and is the single entry point the SSH forced command invokes ([[0001-offload-validation-via-ssh-and-sandboxed-containers]], [[0002-generic-configurable-packagist-tool]]). It is generic: nothing in it names a particular host or module. It does not exist yet; today only the pieces it will be built from exist (`server/smoke-test`, `server/parity-check`).
 
 ## Acceptance criteria
 - [x] `phorward-run` reads a tar archive on stdin into a fresh temp dir (tmpfs where possible); nothing from the host is mounted into the container

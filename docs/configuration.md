@@ -19,7 +19,7 @@ name, or the flag), as text or with `--format json`.
 ### Two scopes, enforced
 
 The project file is committed and shared; the user file is private to one person on one machine. Keeping them
-apart is what keeps homelab hostnames and secrets out of repositories:
+apart is what keeps private hostnames and secrets out of repositories:
 
 - **Project keys** describe the project, and live in the project file: what to run and how.
 - **User keys** describe the person's setup, and live in the user file: which server, how patient to be.

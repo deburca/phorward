@@ -14,7 +14,7 @@ blocked-by:
 # Task 0001: Pinned PHP Validation Image (PHP, Composer, phpcs, phpstan, phpunit)
 
 ## Context
-Origin: domus task 0144 (domus is the homelab server repo where this was prototyped). Implements [[0001-offload-validation-via-ssh-and-sandboxed-containers]]. Results must match the local setup and not drift, so the PHP version and tools are pinned in one image built from this repo. This task is the record of the image's design and measurements; further work on it lives in [[0007-image-profiles-and-module-parameters]], [[0010-image-reproducibility-and-php-matrix]] and [[0011-ci-and-automated-tests-for-the-server-tools]].
+Origin: prototype task 0144 (the prototype is a private server repository where this was first built). Implements [[0001-offload-validation-via-ssh-and-sandboxed-containers]]. Results must match the local setup and not drift, so the PHP version and tools are pinned in one image built from this repo. This task is the record of the image's design and measurements; further work on it lives in [[0007-image-profiles-and-module-parameters]], [[0010-image-reproducibility-and-php-matrix]] and [[0011-ci-and-automated-tests-for-the-server-tools]].
 
 ## Acceptance criteria
 - [x] Image with PHP (build arg, default 8.3), Composer, phpcs/coder ^9, phpstan 2, phpunit 11 via drupal/core-dev, Drupal 11 core; resolved versions recorded in `/opt/TOOL-VERSIONS`
