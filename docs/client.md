@@ -66,7 +66,9 @@ aliases (`PHORWARD_TEST_COMPOSER=1 vendor/bin/phpunit --filter ComposerScripts`)
 
 1. Reads the configuration and works out the project (profile, module).
 2. Packs the project into a tar archive **without** `.git`, `vendor` (unless `sync.include_vendor`), `node_modules`,
-   `.env`, `.env.*`, `*.pem`, `*.key` and SSH private key names, and anything in `sync.exclude`.
+   `.env`, `.env.*`, `*.pem`, `*.key` and SSH private key names, and anything in `sync.exclude`. In a git work tree
+   it packs only the files git tracks and the untracked files it does not ignore (`sync.respect_gitignore`), and
+   refuses a tree over `sync.max_size` (256m) before sending it, naming the largest directories.
 3. Sends one request to the server's forced command, with the archive on standard input, and reads one JSON result.
 4. Prints a report and exits with a status that says what happened.
 

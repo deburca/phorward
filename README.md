@@ -1,5 +1,7 @@
 # phorward
 
+[![CI](https://github.com/deburca/phorward/actions/workflows/ci.yml/badge.svg)](https://github.com/deburca/phorward/actions/workflows/ci.yml)
+
 Offload PHP lint, phpcs, phpstan and phpunit runs to an SSH-reachable Linux server. Each run happens
 in a throwaway, network-less, read-only, non-root container, so the machine you work on stays light and
 code you do not trust (for example model-generated code) never runs on it.
@@ -42,6 +44,18 @@ match the change, and a security scan of the added lines); see [docs/verify.md](
 logic or tests are right, and a person still reviews both.
 `phorward run` sends the project to the server and reports; see [docs/client.md](docs/client.md) for composer `scripts`
 aliases, exit statuses and report formats.
+
+## Documentation
+
+| | |
+|---|---|
+| [Quick start](docs/quickstart.md) | server, client, first run |
+| [Using it in a project](docs/client.md) | `scripts` aliases, exit statuses, reports, CI |
+| [`phorward verify`](docs/verify.md) | the gate a change must pass; the agent harness |
+| [Restricted SSH access](docs/ssh-access.md) | the security guide: read it before exposing a server |
+| [Configuration](docs/configuration.md), [policy](docs/policy.md), [profiles](docs/profiles.md), [protocol](docs/protocol.md) | reference |
+| [Troubleshooting](docs/troubleshooting.md) | start with `phorward doctor` |
+| [Compatibility](docs/compatibility.md) | what stays stable; 0.1 is experimental |
 
 ## Try the server tools
 

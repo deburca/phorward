@@ -3,6 +3,7 @@
     "description": "Offload PHP lint, phpcs, phpstan and phpunit runs to an SSH-reachable server, each in a throwaway sandboxed container.",
     "type": "library",
     "license": "MIT",
+    "homepage": "https://github.com/deburca/phorward",
     "keywords": ["phpunit", "phpcs", "phpstan", "ssh", "docker", "sandbox", "ci"],
     "authors": [
         {
@@ -18,6 +19,11 @@
         "psr-4": {
             "Phorward\\": "src/"
         }
+    },
+    "support": {
+        "issues": "https://github.com/deburca/phorward/issues",
+        "source": "https://github.com/deburca/phorward",
+        "docs": "https://github.com/deburca/phorward/tree/main/docs"
     },
     "bin": ["bin/phorward"],
     "config": {
