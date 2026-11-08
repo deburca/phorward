@@ -243,7 +243,7 @@ it is absent on a server that predates them.
 - Within one protocol version, fields may be **added** to the result and to `info`; clients must ignore
   fields they do not know. Removing or renaming a field, changing a meaning, or adding a required option
   needs a new protocol version.
-- **Additions after 0.1.0.** The option `--paths` and the check `phpcbf` with its `patch` fields (task 0014) were added
+- **Additions in 0.2.0.** The option `--paths` and the check `phpcbf` with its `patch` fields (task 0014) were added
   to protocol 1 without a version bump: an old client never sends them, and a new client treats a server that
   refuses them (`bad_request` naming `--paths` or `phpcbf`, or no `features` in `info`) as one that predates them and
   falls back to checking the whole project without auto-fix.

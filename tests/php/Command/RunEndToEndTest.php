@@ -76,7 +76,7 @@ SH);
     foreach (['lint', 'phpcs', 'phpstan', 'phpunit'] as $check) {
       $this->assertMatchesRegularExpression("/^  $check\\s+passed/m", $out);
     }
-    $this->assertStringContainsString('server: protocol 1, kit 0.1.0; php 8.3.36, phpcs 4.0.4, phpstan 2.3.5, phpunit 11.5.57', $out);
+    $this->assertStringContainsString('server: protocol 1, kit 0.2.0; php 8.3.36, phpcs 4.0.4, phpstan 2.3.5, phpunit 11.5.57', $out);
   }
 
   public function testAFailedCheckIsExitOneWithItsOutput(): void {

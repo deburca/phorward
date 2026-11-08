@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PROTOCOL = 1
-KIT_VERSION = "0.1.0"
+KIT_VERSION = "0.2.0"
 KIT_DIR = Path(__file__).resolve().parent.parent
 
 EXIT_PASSED, EXIT_FAILED, EXIT_REFUSED, EXIT_INFRA, EXIT_BUSY = 0, 1, 2, 70, 75
