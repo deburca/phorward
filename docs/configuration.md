@@ -48,6 +48,8 @@ files or run code from it.
 | `database` | `mariadb`, `sqlite` or `none`; the profile's default | Database for `phpunit` |
 | `dev_packages` | list of Composer packages; empty | Extra dev dependencies baked into a `drupal-module` image (`drupal/key`). Used by `server:install` and image builds, not by runs |
 | `sync.exclude` | list of globs; empty | Paths left out of the uploaded tree, **in addition to** the built-in ones |
+| `sync.respect_gitignore` | bool; `true` | In a git work tree, send only the files git tracks and the untracked files it does not ignore, so a generated demo site or build cache stays home. Turn it off to send the directory as it is |
+| `sync.max_size` | size; `256m` | The largest tree to send. A bigger one is refused before upload, with the largest directories named, so the fix (usually a `sync.exclude` entry or a `.gitignore` line) is obvious. The server has its own limit too ([policy.md](policy.md)) |
 | `sync.include_vendor` | bool; `false` | Send `vendor/`. Normally not needed: the image carries the project's dependencies |
 | `limits.memory`, `limits.cpus`, `limits.pids`, `limits.timeout` | as the protocol's options; unset | What to ask the server for. The server's policy can lower these, never raise them |
 | `gates.base` | git ref; the default branch | What `phorward verify` measures changes from ([verify.md](verify.md)) |

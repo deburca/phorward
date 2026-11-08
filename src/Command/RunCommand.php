@@ -83,7 +83,8 @@ final class RunCommand {
 
     $root = $config->projectRoot;
     $archive = function () use ($root, $config): string {
-      $tar = $this->archiver->create($root, (array) $config->get('sync.exclude'), (bool) $config->get('sync.include_vendor'));
+      $tar = $this->archiver->create($root, (array) $config->get('sync.exclude'), (bool) $config->get('sync.include_vendor'), ['.'],
+        (bool) $config->get('sync.respect_gitignore'), TreeArchiver::parseSize((string) $config->get('sync.max_size')));
       if (strlen($tar) > self::MAX_ARCHIVE_BYTES) {
         throw new ConfigException(sprintf('The tree to send is %d MiB, over the %d MiB the server accepts. Leave things out '
           . 'with sync.exclude.', strlen($tar) / 1048576, self::MAX_ARCHIVE_BYTES / 1048576));

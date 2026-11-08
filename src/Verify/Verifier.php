@@ -246,7 +246,8 @@ final class Verifier {
       'pids' => $config->get('limits.pids'), 'timeout' => $config->get('limits.timeout')];
     $tar = NULL;
     $archive = function () use (&$tar, $config): string {
-      return $tar ??= $this->archiver->create($config->projectRoot, (array) $config->get('sync.exclude'), (bool) $config->get('sync.include_vendor'));
+      return $tar ??= $this->archiver->create($config->projectRoot, (array) $config->get('sync.exclude'), (bool) $config->get('sync.include_vendor'), ['.'],
+        (bool) $config->get('sync.respect_gitignore'), TreeArchiver::parseSize((string) $config->get('sync.max_size')));
     };
     $timeout = (float) ($limits['timeout'] ?? 900) + 60 + (float) $config->get('connect_timeout');
     $runner = new Runner($this->transport, new ResultClassifier(), $this->sleep, $this->log);

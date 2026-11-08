@@ -36,6 +36,10 @@ final class Schema {
       [], NULL, '/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/', NULL, NULL, 'a Composer package name such as drupal/key'));
     $schema->add(new Setting('sync.exclude', Scope::Project, Type::StringList, 'Globs left out of the uploaded tree, in addition to the built-in ones',
       [], NULL, '/^[^\x00-\x1f]{1,200}$/', NULL, NULL, 'a path or glob on one line'));
+    $schema->add(new Setting('sync.respect_gitignore', Scope::Project, Type::Bool,
+      'In a git work tree, send only what git tracks or does not ignore', TRUE));
+    $schema->add(new Setting('sync.max_size', Scope::Project, Type::String, 'Largest tree to send, e.g. 256m; a bigger one is refused before upload',
+      '256m', NULL, '/^[0-9]{1,6}[kmg]$/', NULL, NULL, 'a size such as 256m or 1g'));
     $schema->add(new Setting('sync.include_vendor', Scope::Project, Type::Bool, 'Send vendor/ with the tree', FALSE));
     $schema->add(new Setting('limits.memory', Scope::Project, Type::String, 'Memory to ask the server for, e.g. 4g; the server may lower it',
       NULL, NULL, '/^[0-9]{1,6}[kmg]$/', NULL, NULL, 'a size such as 512m or 4g'));

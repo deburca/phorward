@@ -22,5 +22,10 @@ if (!class_exists(\Phorward\Cli\Application::class)) {
   exit(2);
 }
 
+// A project tree is built and sent as one string; PHP's default 128 MB would end in a bare fatal error.
+if (($limit = trim((string) ini_get('memory_limit'))) !== '-1' && (int) $limit < 512 && !preg_match('/[gG]$/', $limit)) {
+  ini_set('memory_limit', '512M');
+}
+
 $app = new \Phorward\Cli\Application(\Phorward\Config\Schema::standard(), \Phorward\Cli\Output::standard());
 exit($app->run(array_slice($argv, 1), getenv(), getcwd() ?: '.'));
