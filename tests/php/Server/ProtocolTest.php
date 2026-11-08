@@ -46,7 +46,7 @@ final class ProtocolTest extends TestCase {
       'module with capitals' => [['profile' => 'p', 'module' => 'My']],
       'module with a dollar' => [['profile' => 'p', 'module' => 'm$(id)']],
       'php injection' => [['profile' => 'p', 'module' => 'm', 'php' => '8.3; id']],
-      'unknown check' => [['profile' => 'p', 'module' => 'm', 'checks' => ['lint', 'phpcbf']]],
+      'unknown check' => [['profile' => 'p', 'module' => 'm', 'checks' => ['lint', 'phpmd']]],
       'unknown database' => [['profile' => 'p', 'module' => 'm', 'db' => 'oracle']],
       'test path up' => [['profile' => 'p', 'module' => 'm', 'tests' => ['../etc/passwd']]],
       'test path absolute' => [['profile' => 'p', 'module' => 'm', 'tests' => ['/etc/passwd']]],

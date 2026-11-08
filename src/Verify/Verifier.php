@@ -12,6 +12,7 @@ use Phorward\Project\ProfileCatalog;
 use Phorward\Report\Sanitize;
 use Phorward\Run\Outcome;
 use Phorward\Run\ResultClassifier;
+use Phorward\Run\RunResult;
 use Phorward\Run\Runner;
 use Phorward\Server\Protocol;
 use Phorward\Ssh\Transport;
@@ -80,6 +81,10 @@ final class Verifier {
     $notes = [];
     $warnings = [];
     $tests = [];
+    [$sourcePaths, $scopePaths, $scopeNote] = $this->scopePaths($changed, $spec, (string) $config->get('gates.scope'));
+    if ($scopeNote !== NULL) {
+      $notes[] = $scopeNote;
+    }
     $selector = new TestSelector($root, $spec['layout'], $spec['source_extensions']);
 
     if (in_array('changes', $gates, TRUE)) {
@@ -87,6 +92,10 @@ final class Verifier {
     }
     if (in_array('tests', $gates, TRUE)) {
       $results['tests'] = $this->testsGate($selector, $changed, (bool) $config->get('gates.allow_no_tests'));
+    }
+    if ((bool) $config->get('gates.fix') && $sourcePaths !== NULL && $sourcePaths !== [] && in_array('phpcs', $gates, TRUE)
+      && in_array('phpcbf', $spec['checks'], TRUE)) {
+      array_push($notes, ...$this->autoFix($config, $sourcePaths, $php['oldest']));
     }
     $added = [];
     if (array_intersect(['security', 'phpstan'], $gates)) {
@@ -107,6 +116,10 @@ final class Verifier {
         $results[$gate] = new GateResult($gate, GateResult::SKIPPED, 'server', "the profile \"$profile\" does not offer " . self::SERVER_CHECKS[$gate]);
         continue;
       }
+      if ($scopePaths === [] && in_array($gate, ['syntax', 'phpcs'], TRUE)) {
+        $results[$gate] = new GateResult($gate, GateResult::SKIPPED, 'server', 'no PHP source file changed');
+        continue;
+      }
       $server[] = $gate;
     }
     if (in_array('phpunit', $server, TRUE)) {
@@ -124,9 +137,11 @@ final class Verifier {
         $server = array_values(array_diff($server, ['phpunit']));
       }
     }
-    foreach ($this->runServerGates($config, $server, $php, $tests) as $name => $result) {
+    $more = [];
+    foreach ($this->runServerGates($config, $server, $php, $tests, $scopePaths, $more) as $name => $result) {
       $results[$name] = $result;
     }
+    array_push($notes, ...$more);
 
     // A suppressed finding makes phpstan pass without the code being right, so it fails the gate whatever the server said.
     if (isset($results['phpstan'])) {
@@ -227,9 +242,11 @@ final class Verifier {
    * @param string[] $gates Server gates to run.
    * @param array{oldest: string, newest: string} $php
    * @param string[] $tests
+   * @param string[]|null $paths Files the syntax and phpcs gates are limited to; NULL for the whole project.
+   * @param string[] $notes Added to when the run needed a fallback.
    * @return array<string, GateResult>
    */
-  private function runServerGates(ResolvedConfig $config, array $gates, array $php, array $tests): array {
+  private function runServerGates(ResolvedConfig $config, array $gates, array $php, array $tests, ?array $paths, array &$notes): array {
     if ($gates === []) {
       return [];
     }
@@ -237,8 +254,92 @@ final class Verifier {
     foreach ($gates as $gate) {
       $groups[$gate === 'phpunit' ? $php['newest'] : $php['oldest']][] = $gate;
     }
-    $host = $config->get('host');
-    if ($host === NULL) {
+    [$limits, $archive, $runner, $timeout] = $this->serverContext($config);
+
+    $results = [];
+    foreach ($groups as $version => $names) {
+      $checks = array_map(fn(string $gate) => self::SERVER_CHECKS[$gate], $names);
+      $scoped = $paths !== NULL && array_intersect(['syntax', 'phpcs'], $names) !== [] ? $paths : [];
+      $run = $this->send($config, $runner, $archive, $checks, $version, in_array('phpunit', $names, TRUE) ? $tests : [], $limits, $scoped, $timeout);
+      if ($scoped !== [] && $run->outcome->kind === Outcome::CONFIG && preg_match('/--paths/', $run->outcome->reason)) {
+        $notes[] = 'the server predates --paths, so syntax and phpcs covered the whole project';
+        $scoped = [];
+        $run = $this->send($config, $runner, $archive, $checks, $version, in_array('phpunit', $names, TRUE) ? $tests : [], $limits, [], $timeout);
+      }
+      foreach ($this->gateResults($names, $run->outcome, "PHP $version", count($scoped)) as $name => $result) {
+        $results[$name] = $result;
+      }
+    }
+    return $results;
+  }
+
+  /**
+   * Asks the server for phpcbf on the changed files and applies the patch it returns to the working tree.
+   *
+   * @param string[] $paths
+   * @return string[] Notes for the report; a problem here never fails a gate.
+   */
+  private function autoFix(ResolvedConfig $config, array $paths, string $php): array {
+    [$limits, $archive, $runner, $timeout] = $this->serverContext($config);
+    $run = $this->send($config, $runner, $archive, ['phpcbf'], $php, [], $limits, $paths, $timeout);
+    $outcome = $run->outcome;
+    if (!in_array($outcome->kind, [Outcome::PASSED, Outcome::FAILED], TRUE)) {
+      $why = $outcome->kind === Outcome::CONFIG && preg_match('/--paths|phpcbf/', $outcome->reason)
+        ? 'the server predates phpcbf' : Sanitize::terminal($outcome->reason);
+      return ["auto-fix skipped: $why"];
+    }
+    $entry = NULL;
+    foreach ((array) ($outcome->result['checks'] ?? []) as $check) {
+      if (is_array($check) && ($check['name'] ?? NULL) === 'phpcbf') {
+        $entry = $check;
+      }
+    }
+    if ($entry === NULL || ($entry['status'] ?? '') !== 'passed') {
+      return ['auto-fix skipped: phpcbf did not run'];
+    }
+    if (isset($entry['patch_dropped'])) {
+      return ['auto-fix skipped: the patch was ' . ($entry['patch_dropped'] === 'too_large' ? 'too large' : 'not text')];
+    }
+    $patch = is_string($entry['patch'] ?? NULL) ? $entry['patch'] : '';
+    if (trim($patch) === '') {
+      return ['phpcbf: nothing to fix in the changed files'];
+    }
+    try {
+      $fixed = (new PatchApplier())->apply((string) $config->projectRoot, $patch, $paths);
+    }
+    catch (PatchRejected $e) {
+      return ['auto-fix skipped: the patch was refused (' . Sanitize::terminal($e->getMessage()) . ')'];
+    }
+    $list = implode(', ', array_slice($fixed, 0, 8)) . (count($fixed) > 8 ? ', and ' . (count($fixed) - 8) . ' more' : '');
+    return ['phpcbf fixed ' . count($fixed) . " file(s) in your working tree: $list"];
+  }
+
+  /**
+   * @param string[] $checks
+   * @param string[] $tests
+   * @param array<string, mixed> $limits
+   * @param string[] $paths
+   */
+  private function send(ResolvedConfig $config, Runner $runner, \Closure $archive, array $checks, string $version, array $tests,
+    array $limits, array $paths, float $timeout): RunResult {
+    try {
+      $command = Protocol::runCommand((string) $config->get('profile'), (string) $config->get('module'), $checks, $version,
+        $config->get('database'), $tests, $limits, $paths);
+    }
+    catch (\InvalidArgumentException $e) {
+      throw new ConfigException($e->getMessage());
+    }
+    ($this->log)('running ' . implode(', ', $checks) . " on PHP $version");
+    return $runner->run($command, $archive, (int) $config->get('retries'), (float) $config->get('backoff'),
+      (int) $config->get('wait'), $timeout);
+  }
+
+  /**
+   * @return array{0: array<string, mixed>, 1: \Closure, 2: Runner, 3: float} The limits to ask for, the tree archive
+   *   (built once, when first needed), the runner, and the wall-clock allowance for one run.
+   */
+  private function serverContext(ResolvedConfig $config): array {
+    if ($config->get('host') === NULL) {
       throw new ConfigException('No server is configured. Set "host" to an SSH alias or user@host in '
         . '~/.config/phorward/config.json, or export PHORWARD_HOST. "phorward doctor" will check the rest.');
     }
@@ -250,33 +351,51 @@ final class Verifier {
         (bool) $config->get('sync.respect_gitignore'), TreeArchiver::parseSize((string) $config->get('sync.max_size')));
     };
     $timeout = (float) ($limits['timeout'] ?? 900) + 60 + (float) $config->get('connect_timeout');
-    $runner = new Runner($this->transport, new ResultClassifier(), $this->sleep, $this->log);
+    return [$limits, $archive, new Runner($this->transport, new ResultClassifier(), $this->sleep, $this->log), $timeout];
+  }
 
-    $results = [];
-    foreach ($groups as $version => $names) {
-      $checks = array_map(fn(string $gate) => self::SERVER_CHECKS[$gate], $names);
-      try {
-        $command = Protocol::runCommand((string) $config->get('profile'), (string) $config->get('module'), $checks, $version,
-          $config->get('database'), in_array('phpunit', $names, TRUE) ? $tests : [], $limits);
-      }
-      catch (\InvalidArgumentException $e) {
-        throw new ConfigException($e->getMessage());
-      }
-      ($this->log)('running ' . implode(', ', $names) . " on PHP $version");
-      $run = $runner->run($command, $archive, (int) $config->get('retries'), (float) $config->get('backoff'),
-        (int) $config->get('wait'), $timeout);
-      foreach ($this->gateResults($names, $run->outcome, "PHP $version") as $name => $result) {
-        $results[$name] = $result;
+  /**
+   * The changed PHP source files (by the profile's extensions), and what the syntax and phpcs gates are limited to.
+   * The source files are NULL when they cannot be named to the server (an odd file name, or too many). The scope is
+   * NULL for the whole project, with a note when that was not the setting, and an empty list when no source file
+   * changed, so there is nothing for those gates to look at. Only a changed phpcs ruleset widens the scope: it can
+   * change what every file is judged by, whereas a changed phpstan configuration only concerns phpstan, which always
+   * covers the whole project.
+   *
+   * @param string[] $changed
+   * @return array{0: string[]|null, 1: string[]|null, 2: string|null} The source files, the scope, and a note.
+   */
+  private function scopePaths(array $changed, array $spec, string $scope): array {
+    $paths = array_values(array_filter($changed,
+      fn(string $path) => in_array(pathinfo($path, PATHINFO_EXTENSION), $spec['source_extensions'], TRUE)));
+    $reason = NULL;
+    foreach ($paths as $path) {
+      if (!preg_match('#^[A-Za-z0-9_./-]+$#', $path) || str_starts_with($path, '-')) {
+        $reason = "a changed file has a name that cannot be sent as a path ($path), so syntax and phpcs cover the whole project";
       }
     }
-    return $results;
+    if ($reason === NULL && (count($paths) > Protocol::MAX_PATHS || strlen(implode(',', $paths)) > 12000)) {
+      $reason = count($paths) . ' source files changed, too many to name, so syntax and phpcs cover the whole project';
+    }
+    if ($reason !== NULL) {
+      return [NULL, NULL, $scope === 'changed' ? $reason : NULL];
+    }
+    if ($scope !== 'changed') {
+      return [$paths, NULL, NULL];
+    }
+    foreach ($changed as $path) {
+      if (preg_match('#(^|/)\.?phpcs\.xml(\.dist)?$#', $path)) {
+        return [$paths, NULL, "$path changed, so syntax and phpcs cover the whole project"];
+      }
+    }
+    return [$paths, $paths, NULL];
   }
 
   /**
    * @param string[] $names
    * @return array<string, GateResult>
    */
-  private function gateResults(array $names, Outcome $outcome, string $where): array {
+  private function gateResults(array $names, Outcome $outcome, string $where, int $scoped = 0): array {
     $results = [];
     if (!in_array($outcome->kind, [Outcome::PASSED, Outcome::FAILED], TRUE)) {
       foreach ($names as $name) {
@@ -298,10 +417,11 @@ final class Verifier {
         continue;
       }
       $status = $check['status'] ?? '';
+      $detailWhere = ($check['scope'] ?? NULL) === 'paths' && $scoped > 0 ? "$where, $scoped changed file(s)" : $where;
       $reason = Sanitize::terminal(is_scalar($check['reason'] ?? NULL) ? (string) $check['reason'] : '');
       $results[$name] = match ($status) {
-        'passed' => new GateResult($name, GateResult::PASSED, 'server', $where, '', $ms),
-        'failed' => new GateResult($name, GateResult::FAILED, 'server', $where, $this->excerpt((string) ($check['output'] ?? '')), $ms),
+        'passed' => new GateResult($name, GateResult::PASSED, 'server', $detailWhere, '', $ms),
+        'failed' => new GateResult($name, GateResult::FAILED, 'server', $detailWhere, $this->excerpt((string) ($check['output'] ?? '')), $ms),
         'error' => new GateResult($name, GateResult::INFRA, 'server', $reason !== '' ? $reason : 'the check could not run', '', $ms, Outcome::INFRA),
         default => new GateResult($name, GateResult::SKIPPED, 'server', $reason !== '' ? $reason : (string) $status, '', $ms),
       };

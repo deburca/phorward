@@ -6,6 +6,7 @@ you can rely on to change deliberately, with a version bump, and not by accident
 | Surface | Promise |
 |---|---|
 | **Protocol** ([protocol.md](protocol.md)) | Version `1`. Within a version, fields and options are only **added**; clients ignore fields they do not know. A breaking change is a new protocol number, and a server answers an unknown number with `protocol_mismatch`, so a mismatch is an error message and not a surprise |
+| **Added since 0.1.0** | `--paths`, the `phpcbf` check and the `patch`, `scope` fields (task 0014). `info` lists them under `features`. A newer client against an older server falls back (whole project, no auto-fix) and says so |
 | **Exit statuses** | `0` passed, `1` a check failed, `2` configuration or request error, `70` infrastructure, `75` busy. Not renumbered |
 | **Configuration keys** ([configuration.md](configuration.md)) | Names and meanings of the documented keys. A key may be added; one is renamed or removed only in a new minor version while 0.x, with a note in the changelog |
 | **Image labels** | `phorward.profile`, `phorward.module-name`, `phorward.module-path` are read by the server tools |

@@ -72,7 +72,7 @@ aliases (`PHORWARD_TEST_COMPOSER=1 vendor/bin/phpunit --filter ComposerScripts`)
 3. Sends one request to the server's forced command, with the archive on standard input, and reads one JSON result.
 4. Prints a report and exits with a status that says what happened.
 
-Options: `--checks lint,phpcs,phpstan,phpunit`, `--tests path,path` (project-relative), `--format human|json|junit`, and
+Options: `--checks lint,phpcs,phpstan,phpunit`, `--tests path,path` (project-relative), `--paths path,path` (limit `lint` and `phpcs` to these files), `--format human|json|junit`, and
 any setting as a flag (`--php 8.4`, `--database sqlite`, `--limits-timeout 300`, ...). Flags beat environment variables,
 which beat the project file, which beats your user file.
 

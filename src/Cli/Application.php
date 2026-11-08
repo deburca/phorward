@@ -100,7 +100,7 @@ final class Application {
         return $run->run($parsed['positional'], $parsed['options'], $env, $cwd);
       }
       if ($command === 'verify') {
-        $parsed = ArgParser::parse($rest, ['help']);
+        $parsed = ArgParser::parse($rest, ['help', 'fix']);
         if (isset($parsed['options']['help'])) {
           $this->help();
           return self::EXIT_OK;

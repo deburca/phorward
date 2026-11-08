@@ -91,6 +91,15 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual(self.count("pw-count"), 1)
 
+    def test_style_is_fixed_by_default_and_not_when_switched_off(self):
+        self.verdicts(0)
+        self.harness("-m", "p/m", "fix the thing")
+        self.assertIn("--fix", self.args("pw", 1).split())
+        (self.fake / "pw-count").write_text("0")
+        self.verdicts(0)
+        self.harness("-m", "p/m", "fix the thing", env={"HARNESS_FIX": "0"})
+        self.assertNotIn("--fix", self.args("pw", 1).split())
+
     def test_passing_on_the_first_attempt(self):
         self.verdicts(0)
         done = self.harness("-m", "p/m", "fix the thing")
@@ -98,7 +107,7 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(self.count("oc-count"), 1)
         self.assertIn("fix the thing", self.args("oc", 1))
         self.assertIn("--agent phorward-dev --model p/m", self.args("oc", 1))
-        self.assertEqual(self.args("pw", 1).split(), ["verify"])
+        self.assertEqual(self.args("pw", 1).split(), ["verify", "--fix"])
 
     def test_each_failed_attempt_is_a_new_session_that_sees_the_last_report(self):
         self.verdicts(1, 1, 0)
@@ -139,7 +148,7 @@ class HarnessTest(unittest.TestCase):
     def test_the_base_is_passed_on(self):
         self.verdicts(0)
         self.harness("-m", "p/m", "--base", "origin/main", "fix it")
-        self.assertEqual(self.args("pw", 1).split(), ["verify", "--base", "origin/main"])
+        self.assertEqual(self.args("pw", 1).split(), ["verify", "--base", "origin/main", "--fix"])
 
     def test_dry_run_runs_nothing(self):
         done = self.harness("-m", "p/m", "--dry-run", "fix the thing")
@@ -184,8 +193,8 @@ exec sleep 30
         done = self.harness("-m", "p/m", "--test-first", "fix it")
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("--agent phorward-tests", self.args("oc", 1))
-        self.assertEqual(self.args("pw", 1).split(), ["verify", "--only", "syntax,phpcs"])
-        self.assertEqual(self.args("pw", 2).split(), ["verify", "--only", "phpunit", "--tests", "tests/src/Unit/SpecTest.php"])
+        self.assertEqual(self.args("pw", 1).split(), ["verify", "--fix", "--only", "syntax,phpcs"])
+        self.assertEqual(self.args("pw", 2).split(), ["verify", "--fix", "--only", "phpunit", "--tests", "tests/src/Unit/SpecTest.php"])
         self.assertIn("specification tests", self.args("oc", 2))
         self.assertIn("SpecTest.php", self.args("oc", 2))
         self.assertEqual((self.repo / "tests/src/Unit/SpecTest.php").read_text(), "<?php // spec\n")

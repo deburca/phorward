@@ -19,7 +19,7 @@ final class Schema {
   public static function standard(): self {
     $schema = new self();
     $name = '/^[a-z][a-z0-9_]{0,60}$/';
-    $checks = ['lint', 'phpcs', 'phpstan', 'phpunit'];
+    $checks = ['lint', 'phpcbf', 'phpcs', 'phpstan', 'phpunit'];
 
     // Project settings: committed with the project.
     $schema->add(new Setting('profile', Scope::Project, Type::String, 'Image profile; detected when unset', NULL, NULL,
@@ -60,6 +60,10 @@ final class Schema {
       NULL, NULL, '/^[0-9]{1,2}\.[0-9]{1,2}$/', NULL, NULL, 'a version such as 8.3'));
     $schema->add(new Setting('gates.php.newest', Scope::Project, Type::String, 'PHP for the phpunit gate; the profile\'s newest when unset',
       NULL, NULL, '/^[0-9]{1,2}\.[0-9]{1,2}$/', NULL, NULL, 'a version such as 8.5'));
+    $schema->add(new Setting('gates.scope', Scope::Project, Type::String,
+      'What the syntax and phpcs gates look at: the files changed since the base, or the whole project', 'changed', ['changed', 'project']));
+    $schema->add(new Setting('gates.fix', Scope::Project, Type::Bool,
+      'Fix coding-standard findings in the changed files (phpcbf) before the gates run; rewrites your files', FALSE));
     $schema->add(new Setting('gates.phpunit.max_files', Scope::Project, Type::Int, 'Most test files the phpunit gate runs', 8, NULL, NULL, 1, 200));
     $schema->add(new Setting('gates.allow_no_tests', Scope::Project, Type::Bool, 'Do not fail the tests gate when source changed without a test', FALSE));
 

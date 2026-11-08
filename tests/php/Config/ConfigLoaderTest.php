@@ -223,7 +223,7 @@ final class ConfigLoaderTest extends TestCase {
       'php without minor' => [['php' => '8'], 'php is not valid'],
       'php not a string' => [['php' => 8.3], 'php must be a non-empty string'],
       'profile with capitals' => [['profile' => 'Drupal'], 'profile is not valid'],
-      'unknown check' => [['checks' => ['lint', 'phpcbf']], 'checks must be one of'],
+      'unknown check' => [['checks' => ['lint', 'phpmd']], 'checks must be one of'],
       'checks not a list' => [['checks' => 'lint'], 'checks must be a list'],
       'empty checks' => [['checks' => []], 'must not be empty'],
       'duplicate checks' => [['checks' => ['lint', 'lint']], 'twice'],

@@ -181,7 +181,7 @@ final class RunCommandTest extends TestCase {
   }
 
   public function testBadArgumentsAreRefusedBeforeAnythingIsSent(): void {
-    foreach ([['extra'], ['--tests'], ['--tests', '../etc/passwd'], ['--tests', '/etc/passwd'], ['--tests', 'a b'], ['--checks', 'phpcbf'],
+    foreach ([['extra'], ['--tests'], ['--tests', '../etc/passwd'], ['--tests', '/etc/passwd'], ['--tests', 'a b'], ['--checks', 'phpmd'], ['--paths'], ['--paths', '../etc/passwd'], ['--paths', 'a b'], ['--paths', 'a//b.php'],
       ['--database', 'oracle'], ['--limits-memory', 'lots'], ['--bogus', '1'], ['--host', '-oProxyCommand=id']] as $args) {
       [$code] = $this->execute($args, []);
       $this->assertSame(2, $code, json_encode($args));

@@ -30,7 +30,7 @@ The agents may not run `git stash`, `restore`, `rm`, `reset`, `checkout`, `clean
 stashed the harness itself away). The gates call `phorward verify` (by the command in `harness.command`), so the project needs no other tooling.
 
 `harness/harness.sh` is the retry loop around opencode: a fresh session per attempt that sees only the task and the last
-`phorward verify` report, bounded attempts, an optional escalation model, a time limit on every session, one retry when
+`phorward verify` report, bounded attempts, an optional escalation model, phpcbf auto-fix of style findings before each gate run (`HARNESS_FIX=0` turns it off), a time limit on every session, one retry when
 opencode reports "Agent not found", and an optional test-first phase. It treats a gate that could not run (the server,
 not the code) as exit 3 rather than a failed attempt. It needs a model (`--model` or `HARNESS_MODEL`); nothing about
 a particular model or machine is built in. The agent names default to `phorward-dev` and `phorward-tests`

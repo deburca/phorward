@@ -27,13 +27,17 @@ The two protocol additions deferred from [[0012-verify-gate-runner-and-harness-t
 **Client.** `phorward verify` sends `--paths` with the changed files that have a source extension of the profile (skipping the gate with a note when there are none, and falling back to the whole project when a name cannot be sent). `gates.scope` (`changed`, default, or `project`) chooses. With `--fix` (`gates.fix`, default off, because it rewrites the user's files) it first asks for `phpcbf`, checks that the patch touches only the requested files and nothing else (no renames, modes, symlinks, `..` or absolute paths), applies it with `git apply`, and then archives the fixed tree for the real gates. The report names how many files were fixed. A server that does not know `--paths` or `phpcbf` answers `bad_request`; the client then falls back to the whole project and no fix.
 
 ## Acceptance criteria
-- [ ] Server: `--paths` validated and applied to `lint` and `phpcs` in both profiles; the entry says `scope`
-- [ ] Server: the `phpcbf` check in both profiles, patch captured from stdout, size cap in policy, never a failed check
-- [ ] Protocol, policy and compatibility docs updated; tests with the fake engine for options, limits, scope and patch
-- [ ] Client: `run --paths`; `verify` scopes by default and falls back against an older server
-- [ ] Client: `verify --fix` validates and applies the patch safely; a hostile patch is refused
-- [ ] Real server: scoped `verify` and `--fix` on the fixture and on HiveLog; parity differences from the pilot re-checked
-- [ ] The harness uses `--fix`; docs ([verify.md](../../verify.md), [configuration.md](../../configuration.md)) updated
+- [x] Server: `--paths` validated and applied to `lint` and `phpcs` in both profiles; the entry says `scope`
+- [x] Server: the `phpcbf` check in both profiles, patch captured from stdout, size cap in policy, never a failed check
+- [x] Protocol, policy and compatibility docs updated; tests with the fake engine for options, limits, scope and patch
+- [x] Client: `run --paths`; `verify` scopes by default and falls back against an older server
+- [x] Client: `verify --fix` validates and applies the patch safely; a hostile patch is refused
+- [x] Real server: scoped `verify` and `--fix` on the fixture and on HiveLog; parity differences from the pilot re-checked
+- [x] The harness uses `--fix`; docs ([verify.md](../../verify.md), [configuration.md](../../configuration.md)) updated
+
+Progress 2026-11-08: server (`--paths`, the advisory `phpcbf` check, `patch`/`patch_bytes`/`patch_dropped`, `scope`, policy `max_patch_bytes`, `features` in `info`), both profile manifests and `phorward-check`; client (`Protocol` paths, `PatchApplier` with 20 tests including hostile patches, `Verifier` scope and fix, `--fix`, `run --paths`); the harness passes `--fix` unless `HARNESS_FIX=0`. 411 PHP and 136 Python tests pass. On the first server both profiles' smoke tests run the new section (`--paths` catches the file it is asked about and leaves alone one it is not; `phpcbf` returns a patch that applies and changes the file), and `verify --fix` on a fixture with a spacing error fixed `src/Extra.php` in the working tree and passed `syntax` and `phpcs`. The `php-library` image needed a rebuild because `phorward-check` is baked into it; `drupal-module` did not.
+
+HiveLog (`verify --fix` on the calendar-copy changes, 8 of 12 changed files in scope): `syntax` and `phpcs` ran in 0.3 s and 0.6 s, against 4.5 s and 7.4 s over the whole project, and phpcbf found nothing to fix. Parity re-check of the four tasks whose pilot verdicts came from `phpcbf` (T07, T09, T10, T12; plain and harness, 8 runs) with `--fix`: T07, T09 and T10 plain now match the pilot's verdicts, and T12 plain's `phpcs` matches. What still differs from the pilot over all 26 runs is unrelated to style: the `tests` label (the pilot says SKIP, verify says passed-because-allowed; T12 and T13), one hidden test that depends on MariaDB 11.8 tie ordering (T04) and Drupal 11.4 removing `getImplementations()` (T08). A rule found on the way: only a changed phpcs ruleset widens the scope; a changed phpstan baseline had been widening it and, through that, switching `--fix` off.
 
 ## Related
 - Project:: [[first-public-release]]

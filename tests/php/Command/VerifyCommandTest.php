@@ -72,7 +72,7 @@ final class VerifyCommandTest extends TestCase {
     [$code, $out, $err] = $this->verify([], [$this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
     $this->assertSame(0, $code, $out . $err);
     $this->assertSame([
-      'phorward-run run --protocol 1 --profile drupal-module --php 8.3 --module thing --checks lint,phpcs,phpstan',
+      'phorward-run run --protocol 1 --profile drupal-module --php 8.3 --module thing --checks lint,phpcs,phpstan --paths src/Thing.php,tests/src/Unit/ThingTest.php',
       'phorward-run run --protocol 1 --profile drupal-module --php 8.5 --module thing --checks phpunit --tests tests/src/Unit/ThingTest.php',
     ], $this->transport->scripts());
     foreach (['changes', 'syntax', 'phpcs', 'phpstan', 'phpunit', 'tests', 'security'] as $gate) {
@@ -206,7 +206,7 @@ final class VerifyCommandTest extends TestCase {
   public function testWhenTheOldestAndNewestAreTheSameThereIsOneRun(): void {
     $this->change();
     $this->verify([], [$this->good('lint', 'phpcs', 'phpstan', 'phpunit')], ['PHORWARD_GATES_PHP_OLDEST' => '8.4', 'PHORWARD_GATES_PHP_NEWEST' => '8.4']);
-    $this->assertSame(['phorward-run run --protocol 1 --profile drupal-module --php 8.4 --module thing --checks lint,phpcs,phpstan,phpunit --tests tests/src/Unit/ThingTest.php'],
+    $this->assertSame(['phorward-run run --protocol 1 --profile drupal-module --php 8.4 --module thing --checks lint,phpcs,phpstan,phpunit --tests tests/src/Unit/ThingTest.php --paths src/Thing.php,tests/src/Unit/ThingTest.php'],
       $this->transport->scripts());
   }
 
@@ -251,6 +251,145 @@ final class VerifyCommandTest extends TestCase {
     $this->assertSame(0, $code, $out);
     $this->assertDoesNotMatchRegularExpression('/^  (security|tests) /m', $out);
     $this->assertStringContainsString('--php 8.4', $this->transport->scripts()[0]);
+  }
+
+
+  /** The reply of a server that limited lint and phpcs to the named files. */
+  private function scoped(TransportResult $reply): TransportResult {
+    $doc = json_decode($reply->stdout, TRUE);
+    foreach ($doc['checks'] as &$check) {
+      if (in_array($check['name'], ['lint', 'phpcs'], TRUE)) {
+        $check['scope'] = 'paths';
+      }
+    }
+    return new TransportResult($reply->exitCode, json_encode($doc), '');
+  }
+
+  private function refusal(string $message): TransportResult {
+    return new TransportResult(2, json_encode(['protocol' => 1, 'verdict' => 'error', 'exit_code' => 2, 'checks' => [],
+      'error' => ['code' => 'bad_request', 'message' => $message]]), '');
+  }
+
+  private function phpcbfReply(string $patch, array $extra = []): TransportResult {
+    $entry = ['name' => 'phpcbf', 'status' => 'passed', 'duration_ms' => 900, 'output' => '', 'scope' => 'paths', 'patch_bytes' => strlen($patch)] + $extra;
+    if (!isset($extra['patch_dropped'])) {
+      $entry['patch'] = $patch;
+    }
+    return new TransportResult(0, json_encode(['protocol' => 1, 'verdict' => 'passed', 'checks' => [$entry]]), '');
+  }
+
+  private const STYLE_PATCH = "--- a/src/Thing.php\n+++ b/src/Thing.php\n@@ -1,2 +1,2 @@\n <?php\n-class Thing { function a() {} }\n+class Thing { function a() { } }\n";
+
+  public function testSyntaxAndPhpcsAreLimitedToTheChangedSourceFiles(): void {
+    $this->change();
+    $this->write('project/README.md', "docs\n");
+    [$code, $out] = $this->verify([], [$this->scoped($this->good('lint', 'phpcs', 'phpstan')), $this->good('phpunit')]);
+
+    $this->assertSame(0, $code, $out);
+    $this->assertStringContainsString('--paths src/Thing.php,tests/src/Unit/ThingTest.php', $this->transport->scripts()[0]);
+    $this->assertStringNotContainsString('README.md', $this->transport->scripts()[0], 'only source files are named');
+    $this->assertStringNotContainsString('--paths', $this->transport->scripts()[1], 'phpunit has its own list');
+    $this->assertStringContainsString('2 changed file(s)', $out);
+  }
+
+  public function testTheWholeProjectCanBeChosen(): void {
+    $this->change();
+    $this->verify([], [$this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')], ['PHORWARD_GATES_SCOPE' => 'project']);
+    $this->assertStringNotContainsString('--paths', implode(' ', $this->transport->scripts()));
+  }
+
+  public function testWhenNoSourceFileChangedSyntaxAndPhpcsHaveNothingToLookAt(): void {
+    $this->write('project/README.md', "docs\n");
+    [$code, $out] = $this->verify(['--only', 'syntax,phpcs'], []);
+
+    $this->assertSame(0, $code, $out);
+    $this->assertSame([], $this->transport->scripts(), 'nothing was sent');
+    $this->assertStringContainsString('no PHP source file changed', $out);
+  }
+
+  public function testAChangedToolConfigurationMeansTheWholeProject(): void {
+    $this->change();
+    $this->write('project/phpcs.xml.dist', "<ruleset/>\n");
+    [, $out] = $this->verify([], [$this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
+
+    $this->assertStringNotContainsString('--paths', $this->transport->scripts()[0]);
+    $this->assertStringContainsString('phpcs.xml.dist changed, so syntax and phpcs cover the whole project', $out);
+  }
+
+  public function testAChangedPhpstanConfigurationDoesNotWidenTheScope(): void {
+    $this->change();
+    $this->write('project/phpstan-baseline.neon', "parameters: {}\n");
+    $this->verify([], [$this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
+    $this->assertStringContainsString('--paths src/Thing.php,tests/src/Unit/ThingTest.php', $this->transport->scripts()[0]);
+  }
+
+  public function testFixStillWorksWhenARulesetChangeWidensTheScope(): void {
+    $this->change();
+    $this->write('project/phpcs.xml.dist', "<ruleset/>\n");
+    [, $out] = $this->verify(['--fix'], [$this->phpcbfReply(self::STYLE_PATCH), $this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
+    $this->assertStringContainsString('phpcbf fixed 1 file(s)', $out);
+    $this->assertStringNotContainsString('--paths', $this->transport->scripts()[1], 'the gates cover the whole project');
+  }
+
+  public function testAServerThatPredatesPathsIsAskedAgainForTheWholeProject(): void {
+    $this->change();
+    [$code, $out] = $this->verify([], [$this->refusal('unknown option for run: --paths'), $this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
+
+    $this->assertSame(0, $code, $out);
+    $this->assertCount(3, $this->transport->scripts());
+    $this->assertStringContainsString('--paths', $this->transport->scripts()[0]);
+    $this->assertStringNotContainsString('--paths', $this->transport->scripts()[1]);
+    $this->assertStringContainsString('the server predates --paths', $out);
+  }
+
+  public function testFixAppliesTheServersPatchBeforeTheGatesRun(): void {
+    $this->change();
+    [$code, $out] = $this->verify(['--fix'], [$this->phpcbfReply(self::STYLE_PATCH), $this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
+
+    $this->assertSame(0, $code, $out);
+    $this->assertSame("<?php\nclass Thing { function a() { } }\n", file_get_contents($this->tmp . '/project/src/Thing.php'));
+    $this->assertStringContainsString('--checks phpcbf', $this->transport->scripts()[0]);
+    $this->assertStringContainsString('--paths src/Thing.php,tests/src/Unit/ThingTest.php', $this->transport->scripts()[0]);
+    $this->assertStringContainsString('phpcbf fixed 1 file(s) in your working tree: src/Thing.php', $out);
+  }
+
+  public function testNothingIsRewrittenWithoutFix(): void {
+    $this->change();
+    $this->verify([], [$this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
+    $this->assertStringNotContainsString('phpcbf', implode(' ', $this->transport->scripts()));
+    $this->assertSame("<?php\nclass Thing { function a() {} }\n", file_get_contents($this->tmp . '/project/src/Thing.php'));
+  }
+
+  public function testAPatchForAFileThatWasNotAskedAboutIsRefusedAndTheGatesStillRun(): void {
+    $this->change();
+    $evil = "--- a/composer.json\n+++ b/composer.json\n@@ -1 +1 @@\n-{\"name\": \"acme/thing\"}\n+{\"name\": \"evil/thing\"}\n";
+    [$code, $out] = $this->verify(['--fix'], [$this->phpcbfReply($evil), $this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
+
+    $this->assertSame(0, $code, $out);
+    $this->assertSame('{"name": "acme/thing"}', file_get_contents($this->tmp . '/project/composer.json'));
+    $this->assertStringContainsString('auto-fix skipped: the patch was refused', $out);
+  }
+
+  public function testFixAgainstAServerWithoutPhpcbfSaysSoAndCarriesOn(): void {
+    $this->change();
+    [$code, $out] = $this->verify(['--fix'], [$this->refusal('check not available for profile drupal-module: phpcbf'),
+      $this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
+
+    $this->assertSame(0, $code, $out);
+    $this->assertStringContainsString('auto-fix skipped: the server predates phpcbf', $out);
+  }
+
+  public function testADroppedPatchIsReportedNotApplied(): void {
+    $this->change();
+    [, $out] = $this->verify(['--fix'], [$this->phpcbfReply('', ['patch_dropped' => 'too_large']),
+      $this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
+    $this->assertStringContainsString('auto-fix skipped: the patch was too large', $out);
+  }
+
+  public function testAnEmptyPatchSaysThereWasNothingToFix(): void {
+    $this->change();
+    [, $out] = $this->verify(['--fix'], [$this->phpcbfReply(''), $this->good('lint', 'phpcs', 'phpstan'), $this->good('phpunit')]);
+    $this->assertStringContainsString('phpcbf: nothing to fix in the changed files', $out);
   }
 
 }

@@ -48,6 +48,10 @@ final class VerifyCommand {
     $only = $this->list($options, 'only');
     $tests = $this->list($options, 'tests');
     unset($options['base'], $options['only'], $options['tests']);
+    if (($options['fix'] ?? FALSE) === TRUE) {
+      $options['gates-fix'] = 'true';
+    }
+    unset($options['fix']);
     $config = $this->loader->load($cwd, $env, $options);
 
     $format = $config->get('format');

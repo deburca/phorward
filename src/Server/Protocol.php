@@ -11,6 +11,9 @@ final class Protocol {
 
   public const VERSION = 1;
 
+  /** The server refuses more than this in --paths. */
+  public const MAX_PATHS = 500;
+
   public static function infoCommand(): string {
     return 'phorward-run info --protocol ' . self::VERSION;
   }
@@ -22,9 +25,10 @@ final class Protocol {
    * @param string[] $checks Empty for everything the profile offers.
    * @param string[] $tests Paths relative to the project root; empty for all tests.
    * @param array<string, int|float|string|null> $limits memory, cpus, pids and timeout, as asked for.
+   * @param string[] $paths Files relative to the project root that lint and phpcs are limited to (and phpcbf fixes); empty for the whole project.
    */
   public static function runCommand(string $profile, string $module, array $checks = [], ?string $php = NULL,
-    ?string $db = NULL, array $tests = [], array $limits = []): string {
+    ?string $db = NULL, array $tests = [], array $limits = [], array $paths = []): string {
     self::require('profile', $profile, '/^[a-z0-9][a-z0-9_-]{0,40}$/');
     self::require('module', $module, '/^[a-z][a-z0-9_]{0,60}$/');
     $parts = ['phorward-run', 'run', '--protocol', (string) self::VERSION, '--profile', $profile];
@@ -35,7 +39,7 @@ final class Protocol {
     array_push($parts, '--module', $module);
     if ($checks !== []) {
       foreach ($checks as $check) {
-        if (!in_array($check, ['lint', 'phpcs', 'phpstan', 'phpunit'], TRUE)) {
+        if (!in_array($check, ['lint', 'phpcbf', 'phpcs', 'phpstan', 'phpunit'], TRUE)) {
           throw new \InvalidArgumentException('Refusing to send an unknown check to the server.');
         }
       }
@@ -53,6 +57,19 @@ final class Protocol {
         }
       }
       array_push($parts, '--tests', implode(',', $tests));
+    }
+    if ($paths !== []) {
+      if (count($paths) > self::MAX_PATHS || count(array_unique($paths)) !== count($paths)) {
+        throw new \InvalidArgumentException('Refusing to send more than ' . self::MAX_PATHS . ' paths, or the same path twice.');
+      }
+      foreach ($paths as $path) {
+        self::require('path', $path, '#^[A-Za-z0-9_./-]+$#');
+        $segments = explode('/', $path);
+        if (array_intersect(['..', '.', ''], $segments) !== [] || str_starts_with($path, '-')) {
+          throw new \InvalidArgumentException('Refusing to send an unsafe path to the server.');
+        }
+      }
+      array_push($parts, '--paths', implode(',', $paths));
     }
     $patterns = ['memory' => '/^[0-9]{1,6}[kmg]$/', 'cpus' => '/^[0-9]{1,2}(\.[0-9]{1,2})?$/', 'pids' => '/^[0-9]{1,6}$/', 'timeout' => '/^[0-9]{1,6}$/'];
     foreach ($patterns as $name => $pattern) {

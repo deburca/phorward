@@ -20,8 +20,8 @@ A failed gate does not stop the later ones: one run gives one full report.
 | Gate | Where | What it does |
 |---|---|---|
 | `changes` | local | Fails when nothing changed since the base. A run once passed on an empty diff; "nothing was implemented" is a failure |
-| `syntax` | server | `lint` on the **oldest** supported PHP: catches code that only parses on a newer one |
-| `phpcs` | server | The project's own ruleset and the image's tool versions, as CI runs them |
+| `syntax` | server | `lint` of the changed source files on the **oldest** supported PHP: catches code that only parses on a newer one |
+| `phpcs` | server | The project's own ruleset and the image's tool versions, as CI runs them, on the changed source files |
 | `phpstan` | server | The project's own config and baseline, on the oldest PHP. Before it runs, a **local** check fails on any added `phpstan-ignore` or new baseline entry |
 | `phpunit` | server | The tests mapped to the change, capped, on the **newest** PHP, which raises the most deprecations |
 | `tests` | local | Source changed but no test file added or changed: fail |
@@ -30,9 +30,21 @@ A failed gate does not stop the later ones: one run gives one full report.
 Local gates read the working tree and the git diff; they never execute the model's code. Everything that executes it
 goes to the server through the same request, retries and exit statuses as `phorward run`.
 
-Not in the first slice, and why: `phpcbf` (auto-fix changed files in place) needs the server to return a patch, a
-protocol addition; and limiting `syntax` and `phpcs` to the changed files needs a `--paths` option, another one. Both
-are additive. Without them the server gates cover the whole project, which is what CI does.
+`syntax` and `phpcs` look at the **changed source files** by default (`gates.scope`), as the pilot's gates did: a model is
+not told about style problems in files it never touched, and the run is shorter. The files are the changed ones with a
+source extension of the profile. The scope widens to the whole project, with a note in the report, when a phpcs
+ruleset changed (`phpcs.xml*`, which can change what every file is judged by), when a file name cannot be sent to the
+server, or when more than 500 files changed; `gates.scope: project` always runs the whole project, as CI does. When
+no source file changed there is nothing for them to look at and they are skipped, saying so. `phpstan` always covers the
+whole project, because its findings depend on the code around the change. Against a server that predates `--paths`,
+`verify` asks again for the whole project and says so.
+
+**`--fix`** (`gates.fix`, off by default because it rewrites your files) first asks the server to run `phpcbf` on the
+changed source files and applies the patch it returns to your working tree, then runs the gates on the fixed files. The
+server cannot change your files itself (the tree it sees is read-only, and the files are yours), so it returns a unified
+diff; the client checks that the diff changes only the files it asked about, as plain text edits and nothing else (no new
+files, deletions, renames, mode changes or paths outside the project), and has `git apply` check it before it applies
+anything. A refused or oversized patch, or a server without `phpcbf`, is a note in the report, never a failed gate.
 
 ## The changed files
 
@@ -70,8 +82,10 @@ for review.
 | `gates.phpunit.max_files` | `8` | Cap on selected test files |
 | `gates.skip` | none | Gates to leave out by default, for example `["security"]` |
 | `gates.allow_no_tests` | `false` | Do not fail the `tests` gate (a change with nothing to test) |
+| `gates.scope` | `changed` | `changed`: `syntax` and `phpcs` look at the changed source files; `project`: the whole project |
+| `gates.fix` | `false` | Run `phpcbf` on the changed files first and apply its patch to your working tree (flag `--fix`) |
 
-Flags: `--base`, `--only gate,gate`, `--tests path,path` (run exactly these), `--format human|json`. Every setting is
+Flags: `--base`, `--only gate,gate`, `--tests path,path` (run exactly these), `--fix`, `--format human|json`. Every setting is
 also a flag, an environment variable or a key in the project file ([configuration.md](configuration.md)).
 
 The gates that execute project code are sent as at most two ordinary `run` requests: one on the oldest PHP for `syntax`,
@@ -101,9 +115,10 @@ loop's safety rules are kept from the pilot: a time limit on every model session
 when opencode has not yet found the project's agents, and agents that may not run `git stash`, `restore`, `rm`, `reset`,
 `checkout`, `clean`, `commit` or `push` (a model once stashed the harness itself away).
 
-Differences from the pilot's local gates, which a caller of the harness will see: there is no auto-fix (`phpcbf`), so a
-style finding is fixed by hand; `syntax`, `phpcs` and `phpstan` cover the whole project, as CI does, not only the changed
-files; and the project's own phpstan runs from the Drupal project in the image, as it does in CI.
+The loop passes `--fix` (set `HARNESS_FIX=0` to turn it off), so style findings that `phpcbf` can fix are fixed in the
+working tree before the model sees a report, as in the pilot. `syntax` and `phpcs` look at the changed files, as in the
+pilot; `phpstan` covers the whole project, and the project's own phpstan runs from the Drupal project in the image, as it
+does in CI.
 
 ## Decisions
 

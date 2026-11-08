@@ -60,6 +60,14 @@ final class RunCommand {
       $tests = array_map('trim', explode(',', $options['tests']));
       unset($options['tests']);
     }
+    $paths = [];
+    if (array_key_exists('paths', $options)) {
+      if (!is_string($options['paths']) || $options['paths'] === '') {
+        throw new ConfigException('--paths needs a comma-separated list of files relative to the project root.');
+      }
+      $paths = array_map('trim', explode(',', $options['paths']));
+      unset($options['paths']);
+    }
     $config = $this->loader->load($cwd, $env, $options);
 
     $host = $config->get('host');
@@ -75,7 +83,7 @@ final class RunCommand {
       'pids' => $config->get('limits.pids'), 'timeout' => $config->get('limits.timeout')];
     try {
       $command = Protocol::runCommand((string) $config->get('profile'), (string) $config->get('module'),
-        (array) ($config->get('checks') ?? []), $config->get('php'), $config->get('database'), $tests, $limits);
+        (array) ($config->get('checks') ?? []), $config->get('php'), $config->get('database'), $tests, $limits, $paths);
     }
     catch (\InvalidArgumentException $e) {
       throw new ConfigException($e->getMessage());

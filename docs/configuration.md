@@ -59,6 +59,8 @@ files or run code from it.
 | `gates.php.oldest`, `gates.php.newest` | the profile's oldest and newest PHP | PHP for `syntax`, `phpcs` and `phpstan` (oldest), and for `phpunit` (newest) |
 | `gates.phpunit.max_files` | integer; `8` | Most test files the `phpunit` gate runs |
 | `gates.allow_no_tests` | bool; `false` | Do not fail the `tests` gate when source changed without a test |
+| `gates.scope` | `changed` or `project`; `changed` | What `syntax` and `phpcs` look at: the changed source files, or the whole project ([verify.md](verify.md)) |
+| `gates.fix` | bool; `false` | Run `phpcbf` on the changed files first and apply its patch to your working tree. Also the flag `--fix` |
 
 The tree is uploaded without `.git`, `vendor` and `node_modules` unless a key above says otherwise, and never with
 `.env`, `.env.*`, `*.pem`, `*.key` or the SSH private key names `id_rsa`, `id_dsa`, `id_ecdsa` and `id_ed25519`. The

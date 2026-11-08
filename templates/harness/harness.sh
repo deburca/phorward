@@ -25,7 +25,7 @@
 # not counted against the model, and the report says what to fix before running again.
 #
 # Environment: HARNESS_MODEL, HARNESS_ESCALATE, HARNESS_PHORWARD (the command; default the first line of .harness/command, written by harness:install, else vendor/bin/phorward),
-# HARNESS_SESSION_TIMEOUT (seconds a model session may run, default 1500), HARNESS_AGENT_RETRY_WAIT (default 20), HARNESS_AGENT and HARNESS_TESTS_AGENT
+# HARNESS_SESSION_TIMEOUT (seconds a model session may run, default 1500), HARNESS_AGENT_RETRY_WAIT (default 20), HARNESS_FIX (0: do not auto-fix style, default 1), HARNESS_AGENT and HARNESS_TESTS_AGENT
 # (opencode agent names, default phorward-dev and phorward-tests).
 set -uo pipefail
 
@@ -38,6 +38,10 @@ ATTEMPTS=3
 BASE=""
 DRY=0
 TESTFIRST=0
+# phpcbf fixes coding-standard findings in the changed files before the gates look at them, as the pilot did;
+# HARNESS_FIX=0 leaves the files as the model wrote them.
+FIX=1
+[ "${HARNESS_FIX:-1}" = 0 ] && FIX=
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -104,7 +108,7 @@ run_attempt() { # n, model
 # 0 passed, 1 a gate failed (the model's to fix), anything else means the gates could not run.
 gates() {
   # shellcheck disable=SC2086
-  "$PHORWARD" verify ${BASE:+--base "$BASE"} "$@" >"$REPORT" 2>&1
+  "$PHORWARD" verify ${BASE:+--base "$BASE"} ${FIX:+--fix} "$@" >"$REPORT" 2>&1
   GATES_RC=$?
   return $GATES_RC
 }
