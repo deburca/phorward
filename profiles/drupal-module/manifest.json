@@ -226,5 +226,8 @@
         }
       ]
     }
+  },
+  "harness": {
+    "kind": "a Drupal module"
   }
 }

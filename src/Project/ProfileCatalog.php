@@ -54,6 +54,23 @@ final class ProfileCatalog {
   }
 
   /**
+   * What "phorward harness:install" needs from a profile: how to describe the project in the agent prompts, and the
+   * file holding the starter conventions (profiles/<name>/harness/CONVENTIONS.md). NULL if the profile is not known here.
+   *
+   * @return array{kind: string, conventions: string}|null
+   */
+  public function harnessSpec(string $profile): ?array {
+    if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,40}$/', $profile)) {
+      return NULL;
+    }
+    $directory = $this->profilesDir . '/' . $profile;
+    $manifest = is_file($directory . '/manifest.json') ? json_decode((string) file_get_contents($directory . '/manifest.json'), TRUE) : NULL;
+    $kind = is_array($manifest) ? ($manifest['harness']['kind'] ?? NULL) : NULL;
+    $conventions = $directory . '/harness/CONVENTIONS.md';
+    return is_string($kind) && $kind !== '' && is_file($conventions) ? ['kind' => $kind, 'conventions' => $conventions] : NULL;
+  }
+
+  /**
    * What "phorward verify" needs to know about a profile, or NULL if the profile is not known here: the test
    * layout, the PHP versions it supports, the checks it offers, and the security patterns to scan added lines for.
    *

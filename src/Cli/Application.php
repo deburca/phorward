@@ -6,12 +6,14 @@ namespace Phorward\Cli;
 
 use Phorward\Command\ConfigCommand;
 use Phorward\Command\DoctorCommand;
+use Phorward\Command\HarnessInstallCommand;
 use Phorward\Command\RunCommand;
 use Phorward\Command\ServerInstallCommand;
 use Phorward\Command\VerifyCommand;
 use Phorward\Config\ConfigException;
 use Phorward\Config\ConfigLoader;
 use Phorward\Config\Schema;
+use Phorward\Harness\TemplateInstaller;
 use Phorward\Install\InstallPlanner;
 use Phorward\Install\TreeArchiver;
 use Phorward\Project\ProfileCatalog;
@@ -36,6 +38,7 @@ final class Application {
     'run' => 'Send this project to the server and run its checks there',
     'verify' => 'Run the gates a change must pass before it is pushed: lint, standards, static analysis, tests, security',
     'doctor' => 'Check the connection, the server and the image, and say how to fix what is wrong',
+    'harness:install' => 'Install the opencode agents, commands and retry loop that use "verify" as their gate',
     'server:install' => 'Install or update the server side (prints a plan; --apply runs it over ssh)',
   ];
 
@@ -115,6 +118,16 @@ final class Application {
         $doctor = new DoctorCommand(new ConfigLoader($this->schema), $this->transportFactory,
           $this->catalog ?? ProfileCatalog::bundled(), $this->output);
         return $doctor->run($parsed['positional'], $parsed['options'], $env, $cwd);
+      }
+      if ($command === 'harness:install') {
+        $parsed = ArgParser::parse($rest, ['help', 'force', 'dry-run']);
+        if (isset($parsed['options']['help'])) {
+          $this->help();
+          return self::EXIT_OK;
+        }
+        $install = new HarnessInstallCommand(new ConfigLoader($this->schema),
+          new TemplateInstaller($this->catalog ?? ProfileCatalog::bundled(), dirname(__DIR__, 2) . '/templates'), $this->output);
+        return $install->run($parsed['positional'], $parsed['options'], $env, $cwd);
       }
       if ($command === 'server:install') {
         $parsed = ArgParser::parse($rest, ['help', 'apply', 'skip-build', 'skip-smoke']);

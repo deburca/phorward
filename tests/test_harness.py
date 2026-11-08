@@ -89,7 +89,7 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual(self.count("oc-count"), 1)
         self.assertIn("fix the thing", self.args("oc", 1))
-        self.assertIn("--agent hivelog-dev --model p/m", self.args("oc", 1))
+        self.assertIn("--agent phorward-dev --model p/m", self.args("oc", 1))
         self.assertEqual(self.args("pw", 1).split(), ["verify"])
 
     def test_each_failed_attempt_is_a_new_session_that_sees_the_last_report(self):
@@ -143,7 +143,7 @@ class HarnessTest(unittest.TestCase):
     def test_agent_not_found_is_retried_once(self):
         self.script("bin/opencode", """#!/bin/sh
 n=$(($(cat "$FAKE/oc-count" 2>/dev/null || echo 0) + 1)); echo $n > "$FAKE/oc-count"
-[ "$n" -eq 1 ] && { echo "Agent not found: hivelog-dev"; exit 1; }
+[ "$n" -eq 1 ] && { echo "Agent not found: phorward-dev"; exit 1; }
 exit 0
 """)
         self.verdicts(0)
@@ -175,7 +175,7 @@ exec sleep 30
         self.verdicts(0, 1, 0)
         done = self.harness("-m", "p/m", "--test-first", "fix it")
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertIn("--agent hivelog-tests", self.args("oc", 1))
+        self.assertIn("--agent phorward-tests", self.args("oc", 1))
         self.assertEqual(self.args("pw", 1).split(), ["verify", "--only", "syntax,phpcs"])
         self.assertEqual(self.args("pw", 2).split(), ["verify", "--only", "phpunit", "--tests", "tests/src/Unit/SpecTest.php"])
         self.assertIn("specification tests", self.args("oc", 2))

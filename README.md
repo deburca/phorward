@@ -5,7 +5,7 @@ in a throwaway, network-less, read-only, non-root container, so the machine you 
 code you do not trust (for example model-generated code) never runs on it.
 
 **Status: early.** The server-side image and test tools work, and the Composer client (`bin/phorward`) has
-`config`, `run`, `doctor`, `server:install` and `verify`. The package is not published yet.
+`config`, `run`, `doctor`, `server:install`, `verify` and `harness:install`. The package is not published yet.
 
 ## How it fits together
 
@@ -13,7 +13,8 @@ code you do not trust (for example model-generated code) never runs on it.
 |---|---|---|
 | Image profiles | `profiles/<name>/` | `drupal-module` works (PHP 8.3 and 8.5) |
 | Server tools | `server/` | `phorward-run`, `build-image`, `smoke-test`, `hostile-test`, `access-test`, `authorized-key`, `parity-check`, `shard-tests.py` |
-| Client | `bin/phorward`, `src/` | placeholder |
+| Client | `bin/phorward`, `src/` | `config`, `run`, `verify`, `doctor`, `server:install`, `harness:install` |
+| Harness templates | `templates/` | opencode agents and commands and a retry loop on top of `verify`; see [templates/README.md](templates/README.md) |
 
 A validation image has two stages: a **base** (PHP, Composer, lint tools, Drupal core with core-dev, a
 throwaway in-container MariaDB) that knows no module, and a thin **module layer** with that module's
@@ -36,6 +37,9 @@ came from; the settings, their scopes and the layering rules are in [docs/config
 `phorward server:install <admin-host>` prints, and with `--apply` runs, the steps that set up the server side.
 `phorward verify` is the gate a change must pass before it is pushed (lint, standards, static analysis, the tests that
 match the change, and a security scan of the added lines); see [docs/verify.md](docs/verify.md).
+`phorward harness:install` puts opencode agents, commands and a retry loop that use `verify` as their gate into the project
+([templates/README.md](templates/README.md)). It filters lint, coding-standard and CI failures; it does not show that the model's
+logic or tests are right, and a person still reviews both.
 `phorward run` sends the project to the server and reports; see [docs/client.md](docs/client.md) for composer `scripts`
 aliases, exit statuses and report formats.
 

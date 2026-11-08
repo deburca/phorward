@@ -1,6 +1,6 @@
 ---
 description: Implement a feature with tests and verify it against the gates
-agent: hivelog-dev
+agent: phorward-dev
 ---
 Implement this feature:
 

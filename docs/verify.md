@@ -93,7 +93,8 @@ a busy server (`75`), and that before anything else that broke (`70`).
 
 ## The harness loop
 
-`templates/harness/harness.sh` calls `phorward verify` as its gate. Exit `0` ends the loop; exit `1` is the model's to
+`phorward harness:install` puts the loop, the agents and commands, and a starter conventions file into a project
+([templates/README.md](../templates/README.md)). `.harness/harness.sh` calls `phorward verify` as its gate. Exit `0` ends the loop; exit `1` is the model's to
 fix, and the report goes into the next attempt's fresh session; any other status means the gates could not run, so the
 loop stops with its own exit `3` and does not spend an attempt (or escalate to a stronger model) on a server fault. The
 loop's safety rules are kept from the pilot: a time limit on every model session (one once hung for 20 hours), one retry

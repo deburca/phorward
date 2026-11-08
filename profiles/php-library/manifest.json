@@ -176,5 +176,8 @@
         }
       ]
     }
+  },
+  "harness": {
+    "kind": "a PHP library"
   }
 }

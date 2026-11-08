@@ -26,14 +26,14 @@
 #
 # Environment: HARNESS_MODEL, HARNESS_ESCALATE, HARNESS_PHORWARD (the command, default vendor/bin/phorward),
 # HARNESS_SESSION_TIMEOUT (seconds a model session may run, default 1500), HARNESS_AGENT_RETRY_WAIT (default 20), HARNESS_AGENT and HARNESS_TESTS_AGENT
-# (opencode agent names, default hivelog-dev and hivelog-tests).
+# (opencode agent names, default phorward-dev and phorward-tests).
 set -uo pipefail
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "harness: not inside a git work tree" >&2; exit 2; }
 MODEL="${HARNESS_MODEL:-}"
 ESCALATE="${HARNESS_ESCALATE:-none}"
-AGENT="${HARNESS_AGENT:-hivelog-dev}"
-TESTS_AGENT="${HARNESS_TESTS_AGENT:-hivelog-tests}"
+AGENT="${HARNESS_AGENT:-phorward-dev}"
+TESTS_AGENT="${HARNESS_TESTS_AGENT:-phorward-tests}"
 ATTEMPTS=3
 BASE=""
 DRY=0
