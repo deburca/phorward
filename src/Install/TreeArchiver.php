@@ -45,7 +45,8 @@ final class TreeArchiver {
     }
     $files = $respectGitignore && $paths === ['.'] ? $this->gitFiles($root) : NULL;
     if ($files !== NULL) {
-      array_push($tail, '--null', '-T', '-', '-C', $root);
+      // GNU tar applies -C only to the names that follow it, so it comes before the list.
+      array_push($tail, '-C', $root, '--null', '-T', '-');
     }
     else {
       array_push($tail, '-C', $root, ...$paths);
