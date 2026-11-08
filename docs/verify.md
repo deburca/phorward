@@ -91,6 +91,19 @@ infrastructure reasons; `75` the server stayed busy. A real failure wins over an
 something to fix either way; among infrastructure problems a wrong setup (`2`, such as a missing image) comes before
 a busy server (`75`), and that before anything else that broke (`70`).
 
+## The harness loop
+
+`templates/harness/harness.sh` calls `phorward verify` as its gate. Exit `0` ends the loop; exit `1` is the model's to
+fix, and the report goes into the next attempt's fresh session; any other status means the gates could not run, so the
+loop stops with its own exit `3` and does not spend an attempt (or escalate to a stronger model) on a server fault. The
+loop's safety rules are kept from the pilot: a time limit on every model session (one once hung for 20 hours), one retry
+when opencode has not yet found the project's agents, and agents that may not run `git stash`, `restore`, `rm`, `reset`,
+`checkout`, `clean`, `commit` or `push` (a model once stashed the harness itself away).
+
+Differences from the pilot's local gates, which a caller of the harness will see: there is no auto-fix (`phpcbf`), so a
+style finding is fixed by hand; `syntax`, `phpcs` and `phpstan` cover the whole project, as CI does, not only the changed
+files; and the project's own phpstan runs from the Drupal project in the image, as it does in CI.
+
 ## Decisions
 
 Settled when this was reviewed (2026-11-07):

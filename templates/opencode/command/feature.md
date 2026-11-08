@@ -1,5 +1,5 @@
 ---
-description: Implement a feature with tests and verify it against the local gates
+description: Implement a feature with tests and verify it against the gates
 agent: hivelog-dev
 ---
 Implement this feature:
@@ -7,4 +7,4 @@ Implement this feature:
 $ARGUMENTS
 
 Add tests for every new public method, branch and access rule in the same pass. Run the full
-`scripts/harness/verify.sh` before you report, and quote its result.
+`vendor/bin/phorward verify` before you report, and quote its result.

@@ -90,7 +90,7 @@
       "argv": [
         "sh",
         "-c",
-        "if [ -f phpstan.neon ] || [ -f phpstan.neon.dist ]; then phpstan analyse --no-progress --no-ansi --memory-limit=1G; else phpstan analyse --no-progress --no-ansi --memory-limit=1G .; fi"
+        "if [ -f phpstan.neon ] || [ -f phpstan.neon.dist ]; then /opt/drupal-project/vendor/bin/phpstan analyse --no-progress --no-ansi --memory-limit=1G; else /opt/drupal-project/vendor/bin/phpstan analyse --no-progress --no-ansi --memory-limit=1G .; fi"
       ]
     },
     "phpunit": {
